@@ -1,0 +1,5 @@
+# DSHTray notification/power bridge — posts task start/complete events to
+# the tray app (installed by the DeepSeek Harness Tray desktop companion).
+- insert:
+    - id: dsh-tray-notifier
+      name: 'file:///C:/Users/KDRNN/.dsh/plugins/dsh-tray-notifier-v3.mjs'

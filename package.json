@@ -1,0 +1,42 @@
+{
+  "name": "dshtray",
+  "version": "1.4.0",
+  "description": "DeepSeek Harness desktop tray companion",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "icons": "node scripts/gen-icons.mjs",
+    "dist": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "rcedit": "^5.0.2"
+  },
+  "build": {
+    "appId": "com.dsh.tray",
+    "productName": "DeepSeek Harness Tray",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "out",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "ui/**",
+      "assets/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "portable": {
+      "artifactName": "DeepSeek-Harness-Tray-${version}.exe"
+    }
+  }
+}

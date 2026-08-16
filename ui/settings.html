@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>DeepSeek Harness 设置</title>
+<style>
+  :root {
+    --bg: #0b0d1a;
+    --card: rgba(24, 27, 48, 0.72);
+    --card-border: rgba(148, 163, 255, 0.14);
+    --text: #e7e9f6;
+    --dim: #9aa1c0;
+    --faint: #6b7190;
+    --cyan: #22d3ee;
+    --violet: #a78bfa;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #fb7185;
+    --accent: linear-gradient(135deg, #22d3ee, #818cf8 55%, #a78bfa);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+    background: transparent;
+    color: var(--text);
+    overflow: hidden;
+    user-select: none;
+  }
+  .shell { position: relative; width: 100vw; height: 100vh; }
+  .frame {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 18px;
+    overflow: hidden;
+    background:
+      radial-gradient(1100px 500px at 85% -10%, rgba(99, 102, 241, 0.22), transparent 60%),
+      radial-gradient(900px 420px at -10% 110%, rgba(34, 211, 238, 0.13), transparent 55%),
+      linear-gradient(160deg, #101327 0%, #0b0d1a 55%, #0e1024 100%);
+    border: 1px solid rgba(148, 163, 255, 0.16);
+  }
+  .titlebar {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    -webkit-app-region: drag;
+    border-bottom: 1px solid rgba(148, 163, 255, 0.08);
+  }
+  .titlebar .logo {
+    width: 26px; height: 26px;
+    margin-right: 10px;
+    border-radius: 7px;
+    -webkit-app-region: no-drag;
+  }
+  .titlebar .name { font-size: 14px; font-weight: 600; letter-spacing: 0.2px; }
+  .titlebar .ver { margin-left: 8px; font-size: 11px; color: var(--faint); }
+  .titlebar .spacer { flex: 1; }
+  .winbtn {
+    -webkit-app-region: no-drag;
+    width: 36px; height: 28px;
+    border: none; border-radius: 8px;
+    background: transparent; color: var(--dim);
+    font-size: 15px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .winbtn:hover { background: rgba(148, 163, 255, 0.12); color: var(--text); }
+  .winbtn.close:hover { background: rgba(251, 113, 133, 0.18); color: var(--red); }
+  .content {
+    height: calc(100% - 52px);
+    overflow-y: auto;
+    padding: 18px 20px 20px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148,163,255,.25) transparent;
+  }
+  .content::-webkit-scrollbar { width: 6px; }
+  .content::-webkit-scrollbar-thumb { background: rgba(148,163,255,.25); border-radius: 3px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .card h2 {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  /* status */
+  .status-row { display: flex; align-items: center; gap: 14px; }
+  .status-dot {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: var(--faint);
+    flex: none;
+  }
+  .status-dot.up { background: var(--green); animation: pulse 2s infinite; }
+  .status-dot.starting { background: var(--amber); animation: pulse 1s infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(52,211,153,.45); }
+    70% { box-shadow: 0 0 0 9px rgba(52,211,153,0); }
+    100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+  }
+  .status-text { font-size: 15px; font-weight: 600; }
+  .status-sub { font-size: 12px; color: var(--faint); margin-top: 2px; }
+  .status-actions { margin-left: auto; display: flex; gap: 8px; flex: none; }
+
+  .btn {
+    border: 1px solid rgba(148,163,255,.2);
+    background: rgba(148,163,255,.1);
+    color: var(--text);
+    border-radius: 9px;
+    padding: 7px 14px;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: all .18s ease;
+    font-family: inherit;
+  }
+  .btn:hover { background: rgba(148,163,255,.18); transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn:disabled { opacity: .38; cursor: not-allowed; transform: none; }
+  .btn.primary {
+    background: linear-gradient(135deg, rgba(34,211,238,.9), rgba(129,140,248,.9));
+    border: none; color: #08111f; font-weight: 600;
+  }
+  .btn.primary:hover { filter: brightness(1.08); background: linear-gradient(135deg, rgba(34,211,238,.95), rgba(129,140,248,.95)); }
+  .btn.danger { color: var(--red); border-color: rgba(251,113,133,.3); }
+  .btn.danger:hover { background: rgba(251,113,133,.14); }
+
+  /* settings rows */
+  .row {
+    display: flex; align-items: center;
+    padding: 11px 2px;
+    border-bottom: 1px solid rgba(148,163,255,.07);
+  }
+  .row:last-child { border-bottom: none; padding-bottom: 4px; }
+  .row .info { flex: 1; padding-right: 16px; }
+  .row .info .t { font-size: 13.5px; font-weight: 500; }
+  .row .info .d { font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.5; }
+  .row .ctrl { flex: none; display: flex; align-items: center; gap: 10px; }
+
+  /* toggle switch */
+  .switch { position: relative; width: 42px; height: 24px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .track {
+    position: absolute; inset: 0;
+    background: rgba(120, 130, 170, .28);
+    border-radius: 999px;
+    transition: background .22s ease;
+    cursor: pointer;
+  }
+  .switch .track::after {
+    content: "";
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #e8eaf8;
+    box-shadow: 0 2px 6px rgba(0,0,0,.35);
+    transition: transform .22s cubic-bezier(.4, 1.6, .5, 1);
+  }
+  .switch input:checked + .track { background: linear-gradient(135deg, #22d3ee, #818cf8); }
+  .switch input:checked + .track::after { transform: translateX(18px); }
+  .switch input:disabled + .track { opacity: .35; cursor: not-allowed; }
+
+  /* slider */
+  input[type="range"] {
+    -webkit-appearance: none;
+    width: 130px; height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, #22d3ee, #818cf8);
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 15px; height: 15px;
+    border-radius: 50%;
+    background: #e8eaf8;
+    border: 2px solid #818cf8;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  .slider-val { font-size: 12px; color: var(--dim); width: 62px; text-align: right; }
+
+  .power-now {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 4px; padding: 8px 12px;
+    border-radius: 9px;
+    font-size: 12px; color: var(--dim);
+    background: rgba(148, 163, 255, 0.06);
+    border: 1px solid rgba(148, 163, 255, 0.1);
+  }
+  .power-now .pdot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .power-now.awake { color: var(--green); border-color: rgba(52,211,153,.25); }
+  .power-now.awake .pdot { background: var(--green); box-shadow: 0 0 8px rgba(52,211,153,.7); }
+  .power-now.pending { color: var(--amber); border-color: rgba(251,191,36,.25); }
+  .power-now.pending .pdot { background: var(--amber); box-shadow: 0 0 8px rgba(251,191,36,.7); }
+
+  .footer {
+    margin-top: 4px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--faint);
+    line-height: 1.7;
+  }
+  .hint-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(148,163,255,.1);
+    border: 1px solid rgba(148,163,255,.16);
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .err-banner {
+    display: none;
+    margin-bottom: 14px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(251, 113, 133, 0.35);
+    background: rgba(251, 113, 133, 0.1);
+    color: var(--red);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .gh-input {
+    width: 220px;
+    padding: 7px 11px;
+    border-radius: 9px;
+    border: 1px solid rgba(148, 163, 255, 0.22);
+    background: rgba(11, 13, 26, 0.65);
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color .18s ease;
+  }
+  .gh-input:focus { border-color: rgba(34, 211, 238, 0.55); }
+  .gh-input::placeholder { color: var(--faint); }
+  .gh-msg {
+    margin-top: 8px;
+    font-size: 11.5px;
+    color: var(--dim);
+    line-height: 1.6;
+    min-height: 0;
+  }
+  .gh-msg.err { color: var(--red); }
+  .gh-msg.ok { color: var(--green); }
+  .gh-avatar {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    flex: none;
+    background: linear-gradient(135deg, #22d3ee, #818cf8);
+    color: #08111f;
+    font-weight: 700;
+    font-size: 15px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-transform: uppercase;
+  }
+  .gh-name-row { display: flex; align-items: center; gap: 12px; }
+  .gh-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 6px;
+    background: rgba(52, 211, 153, 0.12);
+    border: 1px solid rgba(52, 211, 153, 0.3);
+    color: var(--green);
+    font-size: 10.5px;
+    margin-left: 8px;
+    vertical-align: 1px;
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="frame">
+    <div class="titlebar">
+      <img class="logo" src="../assets/icon-256.png" draggable="false" alt="" />
+      <span class="name">DeepSeek Harness 桌面助手</span>
+      <span class="ver">v<span id="ver"></span></span>
+      <span class="spacer"></span>
+      <button class="winbtn" id="btn-min" title="最小化到任务栏">—</button>
+      <button class="winbtn close" id="btn-close" title="关闭（隐藏到托盘）">✕</button>
+    </div>
+    <div class="content">
+
+      <div class="err-banner" id="err-banner"></div>
+
+      <div class="card">
+        <h2>Harness 服务</h2>
+        <div class="status-row">
+          <div class="status-dot" id="dot"></div>
+          <div>
+            <div class="status-text" id="status-text">检测中…</div>
+            <div class="status-sub" id="status-sub"></div>
+          </div>
+          <div class="status-actions">
+            <button class="btn" id="btn-start">启动</button>
+            <button class="btn" id="btn-restart">重启</button>
+            <button class="btn danger" id="btn-stop">停止</button>
+            <button class="btn primary" id="btn-open">打开 Harness</button>
+          </div>
+        </div>
+        <div class="power-now" id="power-now">
+          <span class="pdot"></span><span id="power-now-text">空闲</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>电源管理</h2>
+        <div class="row">
+          <div class="info">
+            <div class="t">任务进行中阻止休眠</div>
+            <div class="d">任务执行期间保持计算机唤醒，避免长任务被定时自动休眠打断</div>
+          </div>
+          <div class="ctrl">
+            <label class="switch"><input type="checkbox" id="set-keepawake" /><span class="track"></span></label>
+          </div>
+        </div>
+        <div class="row">
+          <div class="info">
+            <div class="t">任务完成后自动睡眠</div>
+            <div class="d">全部任务结束且你已离开一段时间后，让计算机自动进入睡眠以节省电力</div>
+          </div>
+          <div class="ctrl">
+            <label class="switch"><input type="checkbox" id="set-sleepafter" /><span class="track"></span></label>
+          </div>
+        </div>
+        <div class="row">
+          <div class="info">
+            <div class="t">离开判定时长</div>
+            <div class="d">键盘鼠标无操作达到该时长才认为"用户不在"，触发自动睡眠</div>
+          </div>
+          <div class="ctrl">
+            <input type="range" id="set-idlemin" min="1" max="30" step="1" />
+            <span class="slider-val" id="idlemin-val">5 分钟</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>GitHub 账户</h2>
+        <div id="gh-out">
+          <div class="row">
+            <div class="info">
+              <div class="t">登录 GitHub</div>
+              <div class="d">在浏览器中登录 GitHub 并保存访问令牌后，插件市场（设置 → 插件 → 插件管理）与 DeepSeek Harness 的 git 操作（创建仓库、提交、推送等）都可直接使用该账户</div>
+            </div>
+            <div class="ctrl">
+              <button class="btn" id="gh-login">登录 GitHub</button>
+              <button class="btn" id="gh-token">生成访问令牌</button>
+            </div>
+          </div>
+          <div class="row">
+            <div class="info">
+              <div class="t">粘贴访问令牌</div>
+              <div class="d">在浏览器中完成登录并生成令牌（需勾选 repo、workflow 权限）后，将令牌粘贴到这里并验证</div>
+            </div>
+            <div class="ctrl">
+              <input type="password" class="gh-input" id="gh-input" placeholder="ghp_… 或 github_pat_…" />
+              <button class="btn primary" id="gh-save">保存并验证</button>
+            </div>
+          </div>
+          <div class="gh-msg" id="gh-msg"></div>
+        </div>
+        <div id="gh-in" style="display:none">
+          <div class="row" style="border:none; padding-bottom:4px;">
+            <div class="info">
+              <div class="t">
+                <span class="gh-name-row"><span class="gh-avatar" id="gh-avatar">G</span><span id="gh-login-name">—</span><span class="gh-badge">已连接</span></span>
+              </div>
+              <div class="d" id="gh-fullname" style="margin-top:6px;"></div>
+            </div>
+            <div class="ctrl">
+              <button class="btn danger" id="gh-remove">移除登录</button>
+            </div>
+          </div>
+          <div class="gh-msg ok">DeepSeek Harness 可直接使用此账户创建仓库、提交与推送代码；插件市场搜索也已启用认证</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>通用</h2>
+        <div class="row">
+          <div class="info">
+            <div class="t">开机自启</div>
+            <div class="d">登录 Windows 后自动在托盘启动本应用（自启时不会弹出窗口）</div>
+          </div>
+          <div class="ctrl">
+            <label class="switch"><input type="checkbox" id="set-autostart" /><span class="track"></span></label>
+          </div>
+        </div>
+        <div class="row">
+          <div class="info">
+            <div class="t">自动启动 Harness</div>
+            <div class="d">Harness 未运行时，本应用自动执行 npx @deepseek-ai/dsh web</div>
+          </div>
+          <div class="ctrl">
+            <label class="switch"><input type="checkbox" id="set-autolaunch" /><span class="track"></span></label>
+          </div>
+        </div>
+        <div class="row">
+          <div class="info">
+            <div class="t">启动时打开浏览器</div>
+            <div class="d">由本应用拉起 Harness 后，自动打开 Web 界面</div>
+          </div>
+          <div class="ctrl">
+            <label class="switch"><input type="checkbox" id="set-autobrowser" /><span class="track"></span></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>任务完成通知</h2>
+        <div class="row">
+          <div class="info">
+            <div class="t">弹出通知</div>
+            <div class="d">DeepSeek Harness 中任务完成后，在屏幕右下角弹出样式通知</div>
+          </div>
+          <div class="ctrl">
+            <button class="btn" id="btn-test">发送测试通知</button>
+            <label class="switch"><input type="checkbox" id="set-notify" /><span class="track"></span></label>
+          </div>
+        </div>
+        <div class="row">
+          <div class="info">
+            <div class="t">通知显示时长</div>
+            <div class="d">超过时长后通知自动淡出消失</div>
+          </div>
+          <div class="ctrl">
+            <input type="range" id="set-duration" min="3" max="20" step="1" />
+            <span class="slider-val" id="duration-val">8 秒</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>关于</h2>
+        <div class="row" style="border:none; padding-bottom:2px;">
+          <div class="info">
+            <div class="t">DeepSeek Harness Tray <span class="hint-chip">v<span id="ver2"></span></span></div>
+            <div class="d">
+              Web：<span id="about-url"></span> · 通知端口：<span id="about-port"></span><br />
+              本应用仅驻留系统托盘，不在任务栏显示；Harness 进程由本应用管辖，退出应用将同时停止 Harness。
+            </div>
+          </div>
+          <div class="ctrl">
+            <button class="btn" id="btn-quit">退出应用</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">
+        关闭本窗口将隐藏到托盘 · 双击托盘图标打开 Harness · 设置实时生效
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id)
+
+  function showError(msg) {
+    const b = $('err-banner')
+    b.style.display = 'block'
+    b.textContent = msg
+  }
+
+  if (!window.api) {
+    showError('界面桥接加载失败（window.api 不可用），按钮将无法工作。请查看托盘日志 dshtray.log。')
+  }
+
+  function renderSettings(s) {
+    $('set-autostart').checked = !!s.autostart
+    $('set-autolaunch').checked = !!s.autoLaunchDsh
+    $('set-autobrowser').checked = !!s.autoOpenBrowser
+    $('set-notify').checked = !!s.notify
+    $('set-duration').value = s.notifyDuration || 8
+    $('duration-val').textContent = (s.notifyDuration || 8) + ' 秒'
+    $('set-keepawake').checked = !!s.keepAwake
+    $('set-sleepafter').checked = !!s.sleepAfterComplete
+    $('set-idlemin').value = s.sleepIdleMinutes || 5
+    $('idlemin-val').textContent = (s.sleepIdleMinutes || 5) + ' 分钟'
+    if (!s.isPackaged) {
+      $('set-autostart').disabled = true
+      $('set-autostart').parentElement.title = '打包安装后可用'
+    }
+  }
+
+  function renderStatus(st) {
+    const dot = $('dot')
+    dot.className = 'status-dot' + (st.dshRunning ? ' up' : st.dshStarting ? ' starting' : '')
+    $('status-text').textContent = st.dshRunning ? '运行中' : st.dshStarting ? '正在启动…' : '未运行'
+    $('status-sub').textContent = st.dshManaged
+      ? (st.dshAdopted
+        ? '已接管外部 Harness 实例（进程由本应用管辖）· ' + st.url
+        : (st.dshRunning ? '由本应用启动 · ' + st.url : '由本应用启动，等待就绪…'))
+      : (st.dshRunning ? '外部已运行实例（接管中…）· ' + st.url : '自动启动已' + ($('set-autolaunch').checked ? '开启' : '关闭'))
+    $('btn-start').disabled = st.dshRunning || st.dshStarting
+    $('btn-restart').disabled = !st.dshManaged
+    $('btn-stop').disabled = !st.dshManaged
+    const pw = $('power-now')
+    pw.className = 'power-now' + (st.keepAwake ? ' awake' : st.sleepPending ? ' pending' : '')
+    $('power-now-text').textContent = st.keepAwake
+      ? `任务进行中 · 已阻止计算机休眠（${st.runningTasks} 个任务）`
+      : st.sleepPending
+        ? '任务已完成 · 即将自动睡眠…'
+        : '空闲'
+  }
+
+  async function init() {
+    const api = window.api
+    if (!api) return
+    try {
+      const [s, st, g] = await Promise.all([api.getSettings(), api.getStatus(), api.githubState()])
+      $('ver').textContent = st.version
+      $('ver2').textContent = st.version
+      $('about-url').textContent = st.url
+      $('about-port').textContent = st.notifyPort
+      renderSettings(s)
+      renderStatus(st)
+      renderGithub(g)
+      api.onStatus(renderStatus)
+    } catch (err) {
+      showError('初始化失败：' + (err && err.message ? err.message : String(err)))
+      console.error('init failed', err)
+    }
+  }
+
+  function renderGithub(g) {
+    const loggedIn = !!(g && g.loggedIn)
+    $('gh-out').style.display = loggedIn ? 'none' : 'block'
+    $('gh-in').style.display = loggedIn ? 'block' : 'none'
+    if (loggedIn) {
+      const login = g.login || ''
+      $('gh-login-name').textContent = login
+      $('gh-fullname').textContent = g.name && g.name !== login ? `${g.name} · @${login}` : `@${login}`
+      $('gh-avatar').textContent = login.charAt(0).toUpperCase()
+    }
+  }
+
+  function showGhMsg(text, cls) {
+    const m = $('gh-msg')
+    m.className = 'gh-msg' + (cls ? ' ' + cls : '')
+    m.textContent = text
+  }
+
+  function bind(id, fn) { $(id).addEventListener('click', fn) }
+
+  bind('btn-min', () => window.api && window.api.minSettings())
+  bind('btn-close', () => window.api && window.api.hideSettings())
+  bind('btn-quit', () => window.api && window.api.quit())
+  bind('btn-open', () => window.api && window.api.openWeb())
+  bind('btn-start', async () => { if (window.api) renderStatus(await window.api.startDsh()) })
+  bind('btn-restart', async () => { if (window.api) renderStatus(await window.api.restartDsh()) })
+  bind('btn-stop', async () => { if (window.api) renderStatus(await window.api.stopDsh()) })
+  bind('btn-test', () => window.api && window.api.testNotify())
+  bind('gh-login', async () => {
+    if (!window.api) return
+    await window.api.githubOpenLogin()
+    showGhMsg('已在浏览器打开 GitHub 登录页。完成登录后点击「生成访问令牌」继续。')
+  })
+  bind('gh-token', async () => {
+    if (!window.api) return
+    await window.api.githubOpenToken()
+    showGhMsg('已在浏览器打开令牌创建页：请勾选 repo、workflow 权限，生成后复制令牌粘贴到下方输入框。')
+  })
+  bind('gh-save', async () => {
+    if (!window.api) return
+    const token = $('gh-input').value.trim()
+    if (!token) { showGhMsg('请先粘贴访问令牌', 'err'); return }
+    showGhMsg('正在验证令牌…')
+    const r = await window.api.githubSave(token)
+    if (r && r.ok) {
+      $('gh-input').value = ''
+      showGhMsg('')
+      renderGithub({ loggedIn: true, login: r.login, name: r.name, avatarUrl: r.avatarUrl })
+    } else {
+      showGhMsg('验证失败：' + (r && r.error ? r.error : '未知错误'), 'err')
+    }
+  })
+  bind('gh-remove', async () => {
+    if (!window.api) return
+    await window.api.githubRemove()
+    renderGithub({ loggedIn: false })
+  })
+  $('set-autostart').addEventListener('change', (e) => window.api && window.api.setSettings({ autostart: e.target.checked }))
+  $('set-autolaunch').addEventListener('change', (e) => window.api && window.api.setSettings({ autoLaunchDsh: e.target.checked }))
+  $('set-autobrowser').addEventListener('change', (e) => window.api && window.api.setSettings({ autoOpenBrowser: e.target.checked }))
+  $('set-notify').addEventListener('change', (e) => window.api && window.api.setSettings({ notify: e.target.checked }))
+  $('set-duration').addEventListener('input', (e) => { $('duration-val').textContent = e.target.value + ' 秒' })
+  $('set-duration').addEventListener('change', (e) => window.api && window.api.setSettings({ notifyDuration: Number(e.target.value) }))
+  $('set-keepawake').addEventListener('change', (e) => window.api && window.api.setSettings({ keepAwake: e.target.checked }))
+  $('set-sleepafter').addEventListener('change', (e) => window.api && window.api.setSettings({ sleepAfterComplete: e.target.checked }))
+  $('set-idlemin').addEventListener('input', (e) => { $('idlemin-val').textContent = e.target.value + ' 分钟' })
+  $('set-idlemin').addEventListener('change', (e) => window.api && window.api.setSettings({ sleepIdleMinutes: Number(e.target.value) }))
+
+  init()
+</script>
+</body>
+</html>
