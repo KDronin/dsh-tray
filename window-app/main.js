@@ -49,6 +49,12 @@ function createWindow() {
     minHeight: 480,
     title: 'DeepSeek Harness',
     frame: false,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#151517',
+      symbolColor: '#e7e9f6',
+      height: TITLEBAR_HEIGHT,
+    },
     autoHideMenuBar: true,
     backgroundColor: '#151517',
     icon: process.env.DSH_WINDOW_ICON || path.join(__dirname, 'window.ico'),
@@ -179,6 +185,13 @@ function applyTitleTheme(dark) {
       `window.setTitleTheme(${dark ? 'true' : 'false'})`
     ).catch(() => {})
   }
+  try {
+    win.setTitleBarOverlay({
+      color: dark ? '#151517' : '#FFFFFF',
+      symbolColor: dark ? '#e7e9f6' : '#1a1a1a',
+      height: TITLEBAR_HEIGHT,
+    })
+  } catch { /* ignore */ }
 }
 
 function showWindow() {
