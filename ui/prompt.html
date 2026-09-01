@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>DSH 提示</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: transparent; overflow: hidden; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+    user-select: none;
+  }
+  .wrap { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card {
+    position: relative;
+    width: calc(100% - 16px);
+    height: calc(100% - 16px);
+    border-radius: 16px;
+    background: linear-gradient(160deg, rgba(21, 24, 43, 0.98), rgba(12, 14, 28, 0.98));
+    border: 1px solid transparent;
+    background-clip: padding-box;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 18px;
+    opacity: 0;
+    transform: translateX(46px) scale(0.97);
+    transition: opacity .3s ease, transform .34s cubic-bezier(.2, 1.4, .4, 1);
+    cursor: default;
+  }
+  .card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(34, 211, 238, 0.65), rgba(167, 139, 250, 0.55));
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  .card.show { opacity: 1; transform: translateX(0) scale(1); }
+  .title {
+    font-size: 15px; font-weight: 700; letter-spacing: 0.3px;
+    background: linear-gradient(90deg, #7dd3fc, #c4b5fd);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .sub {
+    margin-top: 4px; font-size: 12px; color: #9aa1c0; line-height: 1.5;
+    max-height: 72px; overflow-y: auto;
+  }
+  .questions { flex: 1; min-height: 0; margin-top: 10px; overflow-y: auto; }
+  .q { margin-bottom: 12px; }
+  .q-header { font-size: 11px; color: #5c6280; margin-bottom: 2px; }
+  .q-text { font-size: 13px; color: #e7e9f6; line-height: 1.5; }
+  .q-detail {
+    margin-top: 4px; font-size: 11.5px; color: #8b91b0; line-height: 1.45;
+    border-left: 2px solid rgba(129, 140, 248, 0.35); padding-left: 8px;
+    max-height: 90px; overflow-y: auto; white-space: pre-wrap;
+  }
+  .options { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+  .opt {
+    border: 1px solid rgba(148, 163, 255, 0.22);
+    background: rgba(148, 163, 255, 0.1);
+    color: #e7e9f6;
+    border-radius: 8px;
+    padding: 5px 11px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all .16s ease;
+  }
+  .opt:hover { background: rgba(148, 163, 255, 0.2); }
+  .opt.active {
+    background: linear-gradient(135deg, rgba(34, 211, 238, 0.92), rgba(129, 140, 248, 0.92));
+    border: none; color: #08111f; font-weight: 700;
+  }
+  .input {
+    width: 100%; margin-top: 8px; border-radius: 8px;
+    border: 1px solid rgba(148, 163, 255, 0.22);
+    background: rgba(148, 163, 255, 0.06);
+    color: #e7e9f6; padding: 7px 10px; font-size: 12px; font-family: inherit;
+    outline: none;
+  }
+  .input:focus { border-color: rgba(129, 140, 248, 0.6); }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+  .btn {
+    border: 1px solid rgba(148, 163, 255, 0.22);
+    background: rgba(148, 163, 255, 0.1);
+    color: #e7e9f6;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all .16s ease;
+  }
+  .btn:hover { background: rgba(148, 163, 255, 0.2); }
+  .btn.primary {
+    background: linear-gradient(135deg, rgba(34, 211, 238, 0.92), rgba(129, 140, 248, 0.92));
+    border: none; color: #08111f; font-weight: 700;
+    box-shadow: 0 5px 16px rgba(56, 189, 248, 0.3);
+  }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.ghost { color: #9aa1c0; background: transparent; border-color: rgba(148, 163, 255, 0.14); }
+  .btn.ghost:hover { background: rgba(251, 113, 133, 0.12); color: #fb7185; border-color: rgba(251, 113, 133, 0.25); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card" id="card">
+    <div class="title" id="title"></div>
+    <div class="sub" id="sub"></div>
+    <div class="questions" id="questions"></div>
+    <div class="actions" id="actions"></div>
+  </div>
+</div>
+<script>
+  const params = new URLSearchParams(location.search)
+  let payload = {}
+  try { payload = JSON.parse(decodeURIComponent(params.get('data') || '{}')) } catch (e) { payload = {} }
+  const card = document.getElementById('card')
+  requestAnimationFrame(() => card.classList.add('show'))
+
+  const state = {
+    selections: new Map(),
+  }
+
+  function send(answer) {
+    answer.answerPort = payload.answerPort || 3491
+    window.api.promptAnswer(answer)
+  }
+
+  function cancel() {
+    if (payload.type === 'approval') {
+      send({ type: 'approval', id: payload.id, decision: 'cancelled' })
+    } else {
+      send({ type: 'question', id: payload.id, cancelled: true })
+    }
+  }
+
+  function renderApproval() {
+    document.getElementById('title').textContent = '权限申请'
+    const lines = []
+    if (payload.toolName) lines.push('工具：' + payload.toolName)
+    if (payload.callId) lines.push('调用：' + payload.callId)
+    if (payload.reason) lines.push('原因：' + payload.reason)
+    document.getElementById('sub').textContent = lines.join('\n') || '任务请求需要你的授权'
+    const actions = document.getElementById('actions')
+    const allow = document.createElement('button')
+    allow.className = 'btn primary'
+    allow.textContent = '允许一次'
+    allow.addEventListener('click', () => send({ type: 'approval', id: payload.id, decision: 'allowed-once' }))
+    const reject = document.createElement('button')
+    reject.className = 'btn'
+    reject.textContent = '拒绝'
+    reject.addEventListener('click', () => send({ type: 'approval', id: payload.id, decision: 'rejected' }))
+    const close = document.createElement('button')
+    close.className = 'btn ghost'
+    close.textContent = '取消'
+    close.addEventListener('click', cancel)
+    actions.append(allow, reject, close)
+  }
+
+  function renderQuestions() {
+    document.getElementById('title').textContent = '需要回答'
+    document.getElementById('sub').textContent = 'DSH 任务正在等待你的回答'
+    const box = document.getElementById('questions')
+    const questions = Array.isArray(payload.questions) ? payload.questions : []
+    if (questions.length === 0) {
+      const p = document.createElement('div')
+      p.className = 'q-text'
+      p.textContent = '（无问题内容）'
+      box.appendChild(p)
+    }
+    questions.forEach((q, qi) => {
+      const wrap = document.createElement('div')
+      wrap.className = 'q'
+      if (q.header) {
+        const h = document.createElement('div')
+        h.className = 'q-header'
+        h.textContent = q.header
+        wrap.appendChild(h)
+      }
+      const text = document.createElement('div')
+      text.className = 'q-text'
+      text.textContent = q.question || ('问题 ' + (qi + 1))
+      wrap.appendChild(text)
+      if (q.detail) {
+        const d = document.createElement('div')
+        d.className = 'q-detail'
+        d.textContent = q.detail
+        wrap.appendChild(d)
+      }
+      const options = Array.isArray(q.options) ? q.options : []
+      const multi = !!q.multiSelect
+      const sel = new Set()
+      state.selections.set(q.id, sel)
+      if (options.length > 0) {
+        const opts = document.createElement('div')
+        opts.className = 'options'
+        options.forEach((opt) => {
+          const b = document.createElement('button')
+          b.className = 'opt'
+          b.textContent = opt.label || ''
+          if (opt.description) b.title = opt.description
+          b.addEventListener('click', () => {
+            if (multi) {
+              if (sel.has(opt.label)) { sel.delete(opt.label); b.classList.remove('active') }
+              else { sel.add(opt.label); b.classList.add('active') }
+            } else {
+              sel.clear(); sel.add(opt.label)
+              send({ type: 'question', id: payload.id, answers: [{ id: q.id, selected: [opt.label] }] })
+            }
+          })
+          opts.appendChild(b)
+        })
+        wrap.appendChild(opts)
+      } else {
+        const input = document.createElement('input')
+        input.className = 'input'
+        input.placeholder = '输入回答…'
+        input.dataset.qid = q.id
+        wrap.appendChild(input)
+      }
+      box.appendChild(wrap)
+    })
+    const actions = document.getElementById('actions')
+    const submit = document.createElement('button')
+    submit.className = 'btn primary'
+    submit.textContent = '提交'
+    submit.addEventListener('click', () => {
+      const answers = []
+      for (const q of questions) {
+        const sel = state.selections.get(q.id) || new Set()
+        const input = box.querySelector('input[data-qid="' + CSS.escape(q.id) + '"]')
+        const custom = input ? input.value.trim() : ''
+        answers.push({ id: q.id, selected: Array.from(sel), ...(custom ? { custom } : {}) })
+      }
+      send({ type: 'question', id: payload.id, answers })
+    })
+    const close = document.createElement('button')
+    close.className = 'btn ghost'
+    close.textContent = '取消'
+    close.addEventListener('click', cancel)
+    actions.append(submit, close)
+  }
+
+  if (payload.type === 'approval') renderApproval()
+  else renderQuestions()
+</script>
+</body>
+</html>

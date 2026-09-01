@@ -277,6 +277,23 @@
     margin-left: 8px;
     vertical-align: 1px;
   }
+
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 999;
+    background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-box {
+    width: 360px; max-width: calc(100vw - 40px);
+    background: #15182b; border: 1px solid rgba(148,163,255,0.25);
+    border-radius: 14px; padding: 18px 20px;
+    box-shadow: 0 18px 50px rgba(0,0,0,0.5);
+  }
+  .modal-title { font-size: 15px; font-weight: 700; color: #e7e9f6; }
+  .modal-desc { margin-top: 8px; font-size: 12.5px; color: #9aa1c0; line-height: 1.6; }
+  .modal-count { margin-top: 8px; font-size: 12px; color: #fbbf24; min-height: 16px; }
+  .modal-actions { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; }
+
 </style>
 </head>
 <body>
@@ -318,8 +335,8 @@
         <h2>电源管理</h2>
         <div class="row">
           <div class="info">
-            <div class="t">任务进行中阻止休眠</div>
-            <div class="d">任务执行期间保持计算机唤醒，避免长任务被定时自动休眠打断</div>
+            <div class="t">任务进行中阻止休眠和熄屏</div>
+            <div class="d">任务执行期间阻止系统休眠、屏保和熄屏，避免长任务被中断</div>
           </div>
           <div class="ctrl">
             <label class="switch"><input type="checkbox" id="set-keepawake" /><span class="track"></span></label>
@@ -332,6 +349,15 @@
           </div>
           <div class="ctrl">
             <label class="switch"><input type="checkbox" id="set-sleepafter" /><span class="track"></span></label>
+          </div>
+        </div>
+        <div class="row">
+          <div class="info">
+            <div class="t">自动同意权限申请</div>
+            <div class="d">开启后，任务中的权限申请将自动允许，不再弹出确认</div>
+          </div>
+          <div class="ctrl">
+            <label class="switch"><input type="checkbox" id="set-autoauth" /><span class="track"></span></label>
           </div>
         </div>
         <div class="row">
@@ -466,6 +492,20 @@
   </div>
 </div>
 
+
+  <!-- Auto approve permission warning modal -->
+  <div class="modal-overlay" id="autoauth-modal" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-title">开启自动同意权限申请？</div>
+      <div class="modal-desc">开启后，任务运行期间遇到的权限申请将自动允许，不会再弹出确认窗口。请确认你了解此风险。</div>
+      <div class="modal-count" id="autoauth-count"></div>
+      <div class="modal-actions">
+        <button class="btn" id="autoauth-cancel">取消</button>
+        <button class="btn primary" id="autoauth-confirm" disabled>确认</button>
+      </div>
+    </div>
+  </div>
+
 <script>
   const $ = (id) => document.getElementById(id)
 
@@ -488,6 +528,7 @@
     $('duration-val').textContent = (s.notifyDuration || 8) + ' 秒'
     $('set-keepawake').checked = !!s.keepAwake
     $('set-sleepafter').checked = !!s.sleepAfterComplete
+    $('set-autoauth').checked = !!s.autoApprovePermissions
     $('set-idlemin').value = s.sleepIdleMinutes || 5
     $('idlemin-val').textContent = (s.sleepIdleMinutes || 5) + ' 分钟'
     if (!s.isPackaged) {
@@ -511,7 +552,7 @@
     const pw = $('power-now')
     pw.className = 'power-now' + (st.keepAwake ? ' awake' : st.sleepPending ? ' pending' : '')
     $('power-now-text').textContent = st.keepAwake
-      ? `任务进行中 · 已阻止计算机休眠（${st.runningTasks} 个任务）`
+      ? `任务进行中 · 已阻止休眠和熄屏（${st.runningTasks} 个任务）`
       : st.sleepPending
         ? '任务已完成 · 即将自动睡眠…'
         : '空闲'
@@ -601,6 +642,47 @@
   $('set-duration').addEventListener('change', (e) => window.api && window.api.setSettings({ notifyDuration: Number(e.target.value) }))
   $('set-keepawake').addEventListener('change', (e) => window.api && window.api.setSettings({ keepAwake: e.target.checked }))
   $('set-sleepafter').addEventListener('change', (e) => window.api && window.api.setSettings({ sleepAfterComplete: e.target.checked }))
+  let authConfirmTimer = null
+  function showAutoApproveWarning(onResult) {
+    const overlay = $('autoauth-modal')
+    const confirmBtn = $('autoauth-confirm')
+    const count = $('autoauth-count')
+    overlay.style.display = 'flex'
+    confirmBtn.disabled = true
+    let remain = 5
+    count.textContent = '确认按钮将在 5 秒后可用'
+    if (authConfirmTimer) clearInterval(authConfirmTimer)
+    authConfirmTimer = setInterval(() => {
+      remain -= 1
+      if (remain <= 0) {
+        clearInterval(authConfirmTimer)
+        authConfirmTimer = null
+        confirmBtn.disabled = false
+        count.textContent = '现在可以确认'
+      } else {
+        count.textContent = '确认按钮将在 ' + remain + ' 秒后可用'
+      }
+    }, 1000)
+    const cleanup = () => {
+      if (authConfirmTimer) { clearInterval(authConfirmTimer); authConfirmTimer = null }
+      overlay.style.display = 'none'
+    }
+    confirmBtn.onclick = () => { cleanup(); onResult(true) }
+    $('autoauth-cancel').onclick = () => { cleanup(); onResult(false) }
+  }
+  $('set-autoauth').addEventListener('change', (e) => {
+    if (!e.target.checked) {
+      window.api && window.api.setSettings({ autoApprovePermissions: false })
+      return
+    }
+    showAutoApproveWarning((ok) => {
+      if (ok) {
+        window.api && window.api.setSettings({ autoApprovePermissions: true })
+      } else {
+        $('set-autoauth').checked = false
+      }
+    })
+  })
   $('set-idlemin').addEventListener('input', (e) => { $('idlemin-val').textContent = e.target.value + ' 分钟' })
   $('set-idlemin').addEventListener('change', (e) => window.api && window.api.setSettings({ sleepIdleMinutes: Number(e.target.value) }))
 

@@ -1,9 +1,22 @@
 // DeepSeek Harness Tray — Electron main process
-// A tray-only companion that launches/monitors `npx @deepseek-ai/dsh web`,
+// A tray-only companion that launches/monitors the dsh web service,
 // hosts a local notify endpoint for the DSH notifier plugin, shows a custom
 // bottom-right popup when a task completes, and manages system power:
-//   - keep the computer awake while a task is running
+//   - keep the computer awake (including display/screensaver) while a task is running
 //   - (optionally) sleep the computer after tasks complete and the user is away
+//
+// DSH installation & auto-update:
+//   - dsh is installed into an app-owned directory (DSH_CLI_DIR) via pnpm,
+//     NOT through `npx` — npm's on-demand install has proven unreliable here
+//     (it can hang for minutes before downloading a single tarball), and an
+//     unpinned `npx` command would re-resolve/redownload on every start.
+//   - on every start the tray compares the installed version against the
+//     latest published one (`pnpm view`); when a newer version exists it
+//     shows a VISIBLE console window with the install progress, and only
+//     starts the service after the update finished. When nothing new is
+//     published the service starts hidden, straight from the cached install.
+//   - pnpm (not npm) does the installs: its store/cache handling has been
+//     reliable on this machine while npm's cache has repeatedly wedged.
 'use strict'
 
 const { app, BrowserWindow, Tray, Menu, ipcMain, shell, screen, nativeImage, powerSaveBlocker } = require('electron')
@@ -32,9 +45,10 @@ const DEFAULTS = {
   autoOpenBrowser: true,   // open the browser when we start DSH ourselves
   notify: true,            // show task-complete popups
   notifyDuration: 8,       // seconds the popup stays
-  keepAwake: true,         // block system sleep while a task is running
+  keepAwake: true,         // block system sleep and display sleep while a task is running
   sleepAfterComplete: true,// sleep the computer after tasks finish and the user is away
   sleepIdleMinutes: 5,     // minutes of user inactivity required before auto-sleep
+  autoApprovePermissions: false, // automatically allow permission requests
 }
 
 const state = {
@@ -43,6 +57,7 @@ const state = {
   dshAdopted: false,       // managed DSH was started externally and adopted
   dshStarting: false,
   dshPid: null,
+  dshCooldownUntil: 0,        // backoff after a failed spawn (respown-storm guard)
   adopting: false,
   openedBrowserFor: false,
   lastNotifyKey: '',
@@ -58,8 +73,6 @@ let tray = null
 let settingsWin = null
 let notifyWin = null
 let notifyTimer = null
-let dshWin = null
-let dshLoadFailed = false
 
 const github = {
   loggedIn: false,
@@ -119,8 +132,8 @@ function updateKeepAwake() {
   const active = !!settings.keepAwake && state.runningSessions.size > 0
   if (active && state.blockerId === null) {
     try {
-      state.blockerId = powerSaveBlocker.start('prevent-app-suspension')
-      log('keep-awake ON (task running,', state.runningSessions.size, 'session(s))')
+      state.blockerId = powerSaveBlocker.start('prevent-display-sleep')
+      log('keep-awake ON (display sleep blocked; task running,', state.runningSessions.size, 'session(s))')
     } catch (err) {
       log('powerSaveBlocker start error', err.message)
     }
@@ -214,40 +227,154 @@ function cancelPendingSleep() {
 
 // ---------- DSH process management ----------
 
-function startDsh() {
-  if (state.dshStarting || state.dshRunning) return
-  state.dshStarting = true
-  state.openedBrowserFor = false
-  log('starting DSH: npx --yes @deepseek-ai/dsh web (cwd:', os.homedir(), ')')
-  let child
+// dsh lives in an app-owned directory so updates are explicit and the launch
+// is a direct `node bin.js` (no npx resolution, no npm on-demand install).
+const DSH_CLI_DIR = path.join(app.getPath('appData'), 'DSHTray', 'dsh-cli')
+const DSH_PKG_JSON = path.join(DSH_CLI_DIR, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+const DSH_BIN = path.join(DSH_CLI_DIR, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+const DSH_RETRY_COOLDOWN_MS = 30000
+const DSH_START_TIMEOUT_MS = 900000 // covers the first-run / update install window
+
+function localDshVersion() {
   try {
-    child = spawn('cmd.exe', ['/d', '/c', 'npx --yes @deepseek-ai/dsh web'], {
-      cwd: os.homedir(),
-      windowsHide: true,
-      stdio: 'ignore',
-    })
+    const pkg = JSON.parse(fs.readFileSync(DSH_PKG_JSON, 'utf8'))
+    return typeof pkg.version === 'string' ? pkg.version : ''
+  } catch { return '' }
+}
+
+// Latest published version via pnpm (fast query; offline -> "no update").
+function latestDshVersion(cb) {
+  execFile('cmd.exe', ['/d', '/c', 'pnpm view @deepseek-ai/dsh version'], {
+    windowsHide: true,
+    timeout: 30000,
+    maxBuffer: 1024 * 1024,
+  }, (err, stdout) => {
+    if (err) { log('dsh version check failed:', err.message); cb('') ; return }
+    cb(String(stdout || '').trim())
+  })
+}
+
+// Show a visible console window with the update progress. pnpm reports the
+// full download/extract output there, so the user can see what is happening
+// instead of the machine silently churning. The window closes itself.
+// The command goes through a temp .bat: Node's spawn quoting mangles inline
+// quotes when they are nested inside a `cmd /c "..."` string, and a bat file
+// carries them verbatim.
+function updateDshVisible(version, done) {
+  log('updating dsh to', version, '(visible window)')
+  const bat = path.join(dataDir, 'update-dsh.bat')
+  try {
+    fs.writeFileSync(bat,
+      `@echo off\r\n` +
+      `title DeepSeek Harness - updating dsh to ${version}\r\n` +
+      `pnpm --dir "${DSH_CLI_DIR}" add @deepseek-ai/dsh@${version}\r\n` +
+      `echo.\r\n` +
+      `echo Update finished. This window closes automatically.\r\n` +
+      `timeout /t 5 /nobreak > nul\r\n`)
   } catch (err) {
-    log('startDsh spawn error', err.message)
-    state.dshStarting = false
+    log('updateDshVisible write bat error', err.message)
+    done(false)
     return
   }
+  let child
+  try {
+    child = spawn('cmd.exe', ['/d', '/c', bat], {
+      cwd: os.homedir(),
+      windowsHide: false, // visible on purpose: the user asked to see updates
+      stdio: 'inherit',
+    })
+  } catch (err) {
+    log('updateDshVisible spawn error', err.message)
+    done(false)
+    return
+  }
+  child.on('exit', (code) => {
+    log('dsh update child exited, code', code)
+    done(code === 0)
+  })
+  child.on('error', (err) => {
+    log('dsh update child error', err.message)
+    done(false)
+  })
+}
+
+function spawnDsh() {
+  // Direct spawn of node with an argument array: Node quotes each argument
+  // itself, so the (space-containing) bin path is passed correctly. Going
+  // through `cmd /c "node \"...\""` corrupted the quotes (Node's escaping
+  // clashes with cmd's quoting rules) and every start failed with
+  // MODULE_NOT_FOUND. The child's output is captured to a log file so a
+  // future failure is visible instead of silent.
+  const childLogPath = path.join(dataDir, 'dsh-child.log')
+  let childLog
+  try {
+    fs.appendFileSync(childLogPath, `\n--- ${new Date().toISOString()} start ---\n`)
+    childLog = fs.openSync(childLogPath, 'a')
+  } catch { childLog = -1 }
+  const child = spawn('node', [DSH_BIN, 'web', '--no-open'], {
+    cwd: os.homedir(),
+    windowsHide: true,
+    stdio: ['ignore', childLog >= 0 ? childLog : 'ignore', childLog >= 0 ? childLog : 'ignore'],
+  })
   state.dshManaged = true
   state.dshAdopted = false
   state.dshPid = child.pid
   child.on('exit', (code) => {
+    try { if (childLog >= 0) fs.closeSync(childLog) } catch { /* ignore */ }
     log('DSH child exited, code', code)
     if (state.dshPid === child.pid) state.dshPid = null
     state.dshManaged = false
     state.dshStarting = false
     state.dshRunning = false
+    // A failed spawn must not immediately trigger another one: that is what
+    // turned a single startup failure into a respawn storm. Back off briefly.
+    if (code !== 0 && code !== null) state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
     broadcastStatus()
     refreshTray()
   })
   child.on('error', (err) => {
     log('DSH child error', err.message)
     state.dshStarting = false
+    state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
   })
-  setTimeout(() => { if (state.dshStarting) { state.dshStarting = false; log('DSH start timed out') } }, 120000)
+}
+
+function startDsh() {
+  if (state.dshStarting || state.dshRunning) return
+  if (state.dshCooldownUntil && Date.now() < state.dshCooldownUntil) return
+  state.dshStarting = true
+  state.openedBrowserFor = false
+  log('starting DSH (installed:', localDshVersion() || 'none', ')')
+  // The update watch is deliberately fire-and-forget within the start: no
+  // update check hits the registry synchronously; a slow/offline registry
+  // just falls back to the installed version.
+  latestDshVersion((latest) => {
+    if (!state.dshStarting) return // stop/quit raced us
+    const local = localDshVersion()
+    if (latest && latest !== local) {
+      log('dsh update available:', local || '(none)', '->', latest)
+      updateDshVisible(latest, (ok) => {
+        if (!ok) {
+          log('dsh update failed; falling back to installed version')
+        }
+        if (state.dshStarting) spawnDsh()
+        else state.dshStarting = false
+      })
+      return
+    }
+    if (!latest) log('dsh version check unavailable; using installed version')
+    if (!local && !latest) {
+      // Nothing installed and the registry is unreachable — nothing to run.
+      log('dsh is not installed and the registry is unreachable')
+      state.dshStarting = false
+      state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
+      broadcastStatus()
+      refreshTray()
+      return
+    }
+    spawnDsh()
+  })
+  setTimeout(() => { if (state.dshStarting) { state.dshStarting = false; state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS; log('DSH start timed out after ' + DSH_START_TIMEOUT_MS / 1000 + 's (likely a version update in progress)') } }, DSH_START_TIMEOUT_MS)
   broadcastStatus()
   refreshTray()
 }
@@ -405,6 +532,21 @@ function handleNotify(payload) {
     refreshTray()
     return
   }
+  if (type === 'approval') {
+    if (settings.autoApprovePermissions) {
+      log('auto-approving permission:', payload.id || '')
+      sendPromptAnswer({ type: 'approval', id: payload.id, decision: 'allowed-once', answerPort: payload.answerPort || 3491 })
+      return
+    }
+    log('showing prompt:', type, payload.id || '')
+    showPrompt(payload)
+    return
+  }
+  if (type === 'question') {
+    log('showing prompt:', type, payload.id || '')
+    showPrompt(payload)
+    return
+  }
   // task-complete (or legacy plain notify payload)
   const key = `${payload.sessionId || ''}|${payload.title || ''}|${payload.message || ''}`
   const now = Date.now()
@@ -553,107 +695,81 @@ async function removeGithub() {
   log('github account removed')
 }
 
-// ---------- DSH web window (the one persistent window) ----------
+// ---------- DSH window application (separate process) ----------
 //
-// A single maintained window hosts the DSH web UI with browser-like
-// behaviour: F5/Ctrl+R reload, right-click editing menu, auto-paired
-// quotes/brackets in inputs (dsh-preload). Links and popups that would
-// leave the DSH origin are opened in the system default browser instead.
+// The Harness UI lives in a SEPARATE application (DeepSeek Harness Window)
+// with its own process, taskbar entry and icon — not inside this tray app.
+// The tray app orchestrates it over a loopback control plane:
+//   GET  http://127.0.0.1:3490/ping   alive probe
+//   GET  http://127.0.0.1:3490/show   show & focus the window
+//   POST http://127.0.0.1:3490/quit   quit the window app
 
-function isDshUrl(url) {
-  if (!url) return false
-  return url === 'about:blank' || url.startsWith(DSH_URL)
+const WINDOW_CTRL = 'http://127.0.0.1:3490'
+
+function windowAppExe() {
+  const base = process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe')
+  return path.join(path.dirname(base), 'DeepSeek Harness Window.exe')
+}
+
+function windowAppPing(cb) {
+  let done = false
+  const finish = (v) => { if (!done) { done = true; cb(v) } }
+  const req = http.get(WINDOW_CTRL + '/ping', { timeout: 800 }, (res) => {
+    res.resume()
+    finish(res.statusCode === 200)
+  })
+  req.on('timeout', () => { req.destroy(); finish(false) })
+  req.on('error', () => finish(false))
+}
+
+function windowAppShow() {
+  http.get(WINDOW_CTRL + '/show', (res) => { res.resume() }).on('error', () => { /* ignore */ })
 }
 
 function openDsh() {
-  if (dshWin && !dshWin.isDestroyed()) {
-    if (dshLoadFailed) {
-      dshLoadFailed = false
-      log('DSH web window reloading after previous load failure')
-      dshWin.loadURL(DSH_URL)
+  log('opening DSH window application')
+  windowAppPing((alive) => {
+    if (alive) {
+      log('window app already running; showing it')
+      windowAppShow()
+      return
     }
-    if (dshWin.isMinimized()) dshWin.restore()
-    dshWin.show()
-    dshWin.focus()
-    return
-  }
-  log('creating DSH web window at', DSH_URL)
-  dshWin = new BrowserWindow({
-    width: 1340,
-    height: 880,
-    minWidth: 720,
-    minHeight: 480,
-    title: 'DeepSeek Harness',
-    autoHideMenuBar: true,
-    backgroundColor: '#0b0d1a',
-    icon: path.join(__dirname, 'assets', 'icon-256.png'),
-    webPreferences: {
-      preload: path.join(__dirname, 'dsh-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+    const exe = windowAppExe()
+    if (!fs.existsSync(exe)) {
+      log('window app executable not found:', exe)
+      return
+    }
+    log('window app not running; spawning', exe)
+    try {
+      const child = spawn(exe, [], { windowsHide: false, detached: true, stdio: 'ignore' })
+      child.on('error', (err) => log('window app spawn error', err.message))
+      child.unref()
+      // the app takes a moment to boot its control plane; retry /show
+      let tries = 0
+      const poll = setInterval(() => {
+        tries += 1
+        if (tries > 20) { clearInterval(poll); log('window app did not come up'); return }
+        windowAppPing((up) => {
+          if (up) {
+            clearInterval(poll)
+            log('window app is up; showing it')
+            windowAppShow()
+          }
+        })
+      }, 500)
+    } catch (err) {
+      log('window app spawn error', err.message)
+    }
   })
-  attachDiagnostics(dshWin, 'dsh-web')
-  dshWin.webContents.on('did-fail-load', () => { dshLoadFailed = true })
+}
 
-  // Browser-like keyboard shortcuts
-  dshWin.webContents.on('before-input-event', (event, input) => {
-    if (!input || input.type !== 'keyDown') return
-    const key = String(input.key || '').toLowerCase()
-    if (input.key === 'F5' || (input.control && key === 'r')) {
-      event.preventDefault()
-      log('DSH web window reload (F5/Ctrl+R)')
-      if (input.shift) dshWin.webContents.reloadIgnoringCache()
-      else dshWin.webContents.reload()
-    } else if (input.control && key === 'w') {
-      event.preventDefault()
-      log('DSH web window hidden (Ctrl+W)')
-      dshWin.hide()
-    }
-  })
-
-  // Right-click editing menu, like a browser
-  dshWin.webContents.on('context-menu', (_e, params) => {
-    const template = []
-    if (params.isEditable) {
-      template.push(
-        { role: 'cut', label: '剪切' },
-        { role: 'copy', label: '复制' },
-        { role: 'paste', label: '粘贴' },
-        { role: 'selectAll', label: '全选' },
-      )
-    } else if (params.selectionText) {
-      template.push({ role: 'copy', label: '复制' })
-    }
-    template.push({ type: 'separator' }, { role: 'reload', label: '刷新' })
-    Menu.buildFromTemplate(template).popup({ window: dshWin })
-  })
-
-  // Anything leaving the DSH origin opens in the default browser as a tab
-  dshWin.webContents.on('will-navigate', (event, url) => {
-    if (isDshUrl(url)) return
-    event.preventDefault()
-    log('external navigation redirected to default browser:', url)
-    shell.openExternal(url)
-  })
-  dshWin.webContents.setWindowOpenHandler(({ url }) => {
-    if (url && !isDshUrl(url)) {
-      log('new-window request redirected to default browser:', url)
-      shell.openExternal(url)
-    }
-    return { action: 'deny' }
-  })
-
-  dshWin.loadURL(DSH_URL)
-  dshWin.on('close', (e) => {
-    if (!app.isQuitting) {
-      e.preventDefault()
-      log('DSH web window hidden (kept for reuse)')
-      dshWin.hide()
-    }
-  })
-  dshWin.on('closed', () => { dshWin = null })
+function quitWindowApp() {
+  try {
+    const req = http.request(WINDOW_CTRL + '/quit', { method: 'POST', timeout: 2000 }, (res) => { res.resume() })
+    req.on('error', () => { /* ignore */ })
+    req.on('timeout', () => req.destroy())
+    req.end()
+  } catch { /* ignore */ }
 }
 
 // ---------- notification popup window ----------
@@ -712,6 +828,84 @@ function closeNotify() {
   const w = notifyWin
   try { w.webContents.send('fade-out') } catch { /* ignore */ }
   setTimeout(() => { if (!w.isDestroyed()) w.destroy() }, 280)
+}
+
+// ---------- prompt popup (approval / user questions) ----------
+
+let promptWin = null
+let currentPrompt = null
+
+function showPrompt(payload) {
+  if (promptWin) {
+    if (currentPrompt) {
+      if (currentPrompt.type === 'approval') {
+        sendPromptAnswer({ type: 'approval', id: currentPrompt.id, decision: 'cancelled', answerPort: currentPrompt.answerPort || 3491 })
+      } else {
+        sendPromptAnswer({ type: 'question', id: currentPrompt.id, cancelled: true, answerPort: currentPrompt.answerPort || 3491 })
+      }
+    }
+    promptWin.destroy()
+  }
+  currentPrompt = payload
+  const { workArea } = screen.getPrimaryDisplay()
+  const W = 480
+  const H = 340
+  const x = workArea.x + workArea.width - W - 18
+  const y = workArea.y + workArea.height - H - 18
+  promptWin = new BrowserWindow({
+    width: W,
+    height: H,
+    x,
+    y,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    hasShadow: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  })
+  attachDiagnostics(promptWin, 'prompt')
+  promptWin.setSkipTaskbar(true)
+  promptWin.setAlwaysOnTop(true, 'screen-saver')
+  promptWin.loadFile(path.join(__dirname, 'ui', 'prompt.html'), {
+    query: { data: encodeURIComponent(JSON.stringify(payload)) },
+  })
+  promptWin.once('ready-to-show', () => {
+    try { promptWin.showInactive() } catch { /* ignore */ }
+  })
+  promptWin.on('closed', () => {
+    promptWin = null
+    currentPrompt = null
+  })
+}
+
+function sendPromptAnswer(answer) {
+  const port = Number(answer.answerPort || 3491)
+  const body = JSON.stringify(answer)
+  const req = http.request({
+    host: '127.0.0.1',
+    port,
+    path: '/answer',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    },
+    timeout: 2000,
+  }, (res) => { res.resume() })
+  req.on('error', () => { /* ignore */ })
+  req.on('timeout', () => req.destroy())
+  req.end(body)
 }
 
 // ---------- settings window ----------
@@ -801,7 +995,7 @@ function buildTrayMenu() {
       click: (item) => saveSettings({ notify: item.checked }),
     },
     {
-      label: '任务进行中阻止休眠',
+      label: '任务进行中阻止休眠和熄屏',
       type: 'checkbox',
       checked: !!settings.keepAwake,
       click: (item) => saveSettings({ keepAwake: item.checked }),
@@ -912,6 +1106,12 @@ function registerIpc() {
   ipcMain.handle('quit-app', () => { app.isQuitting = true; app.quit() })
   ipcMain.on('notify-view', () => { openDsh(); closeNotify() })
   ipcMain.on('notify-close', () => closeNotify())
+  ipcMain.on('prompt-answer', (_e, answer) => {
+    log('prompt answer:', answer && answer.type, answer && answer.id || '')
+    if (promptWin) { try { promptWin.destroy() } catch { /* ignore */ } promptWin = null }
+    currentPrompt = null
+    sendPromptAnswer(answer)
+  })
 }
 
 // ---------- app lifecycle ----------
@@ -938,6 +1138,7 @@ if (!gotLock) {
         log('quit: taskkill error', err && err.message)
       }
     }
+    quitWindowApp()
   })
 
   app.whenReady().then(() => {

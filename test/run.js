@@ -104,10 +104,10 @@ setTimeout(async () => {
 
   await new Promise((r) => setTimeout(r, 500))
   const log = fs.readFileSync(path.join(process.env.APPDATA, 'DSHTray', 'dshtray.log'), 'utf8')
-  const createCount = (log.match(/creating DSH web window/g) || []).length
-  const focusCount = (log.match(/focusing existing DSH tab/g) || []).length
-  console.log('DSH-WINDOW: created=' + createCount + ' tabFocusLogs=' + focusCount + ' (expect 1/0)')
-  if (createCount !== 1 || focusCount !== 0) { console.log('TEST FAILED: window reuse logic'); process.exit(1) }
+  const openCount = (log.match(/opening DSH window application/g) || []).length
+  const inAppCreates = (log.match(/creating DSH web window/g) || []).length
+  console.log('DSH-WINDOW-APP: openAttempts=' + openCount + ' inAppWindowCreates=' + inAppCreates + ' (expect 2/0)')
+  if (openCount !== 2 || inAppCreates !== 0) { console.log('TEST FAILED: window-app orchestration'); process.exit(1) }
   const lines = log.trim().split('\n')
   const tail = lines.slice(-10)
   console.log('LOG-TAIL:')

@@ -1,0 +1,31 @@
+{
+  "name": "dsh-window",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness 独立窗口应用（由 DeepSeek Harness Tray 编排）",
+  "private": true,
+  "main": "main.js",
+  "build": {
+    "appId": "com.dsh.window",
+    "productName": "DeepSeek Harness Window",
+    "electronVersion": "33.4.11",
+    "electronDist": "../node_modules/electron/dist",
+    "directories": {
+      "output": "out",
+      "buildResources": "."
+    },
+    "files": [
+      "main.js",
+      "dsh-preload.js",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "deepseek-256.ico"
+    },
+    "portable": {
+      "artifactName": "DeepSeek-Harness-Window-${version}.exe"
+    }
+  }
+}

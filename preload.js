@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
   quit: () => ipcRenderer.invoke('quit-app'),
   notifyView: () => ipcRenderer.send('notify-view'),
   notifyClose: () => ipcRenderer.send('notify-close'),
+  promptAnswer: (answer) => ipcRenderer.send('prompt-answer', answer),
   onStatus: (cb) => ipcRenderer.on('status', (_e, s) => cb(s)),
   onFadeOut: (cb) => ipcRenderer.on('fade-out', () => cb()),
 })
