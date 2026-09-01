@@ -12,17 +12,20 @@
 //   POST /quit -> app.quit()
 'use strict'
 
-const { app, BrowserWindow, Menu, shell } = require('electron')
+const { app, BrowserWindow, Menu, shell, WebContentsView } = require('electron')
 const http = require('http')
 const path = require('path')
 
 const DSH_URL = 'http://127.0.0.1:3080'
 const CTRL_PORT = 3490
+const TITLEBAR_HEIGHT = 40
 
 const isSmoke = process.argv.includes('--smoke')
 
 let win = null
 let loadFailed = false
+let titleView = null
+let currentTheme = 'dark'
 
 function log(...args) {
   const line = `[${new Date().toISOString()}] [dsh-window] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}\n`
@@ -41,23 +44,22 @@ function createWindow() {
   log('creating window at', DSH_URL)
   win = new BrowserWindow({
     width: 1340,
-    height: 880,
+    height: 880 + TITLEBAR_HEIGHT,
     minWidth: 720,
     minHeight: 480,
     title: 'DeepSeek Harness',
     frame: false,
     autoHideMenuBar: true,
-    backgroundColor: '#0b0d1a',
+    backgroundColor: '#151517',
     icon: process.env.DSH_WINDOW_ICON || path.join(__dirname, 'window.ico'),
-    // Keep the native window controls (minimize / maximize / close) while
-    // removing the white Windows title bar. The controls are drawn as dark
-    // overlay buttons that fit the DSH dark UI.
-    titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#0b0d1a',
-      symbolColor: '#e7e9f6',
-      height: 40,
-    },
+  })
+
+  // Custom top bar: an extra row above the page; never takes DSH page space.
+  titleView = new WebContentsView({ webPreferences: { contextIsolation: false, nodeIntegration: true } })
+  win.contentView.addChildView(titleView)
+
+  // DSH page view occupies the remaining area below the titlebar.
+  const pageView = new WebContentsView({
     webPreferences: {
       preload: path.join(__dirname, 'dsh-preload.js'),
       contextIsolation: true,
@@ -65,18 +67,33 @@ function createWindow() {
       sandbox: false,
     },
   })
-  win.webContents.on('did-finish-load', () => log('did-finish-load'))
-  win.webContents.on('did-fail-load', (_e, code, desc) => { loadFailed = true; log('did-fail-load', code, desc) })
-  win.webContents.on('preload-error', (_e, p, err) => log('PRELOAD-ERROR', p, err && err.message))
+  win.contentView.addChildView(pageView)
 
-  win.webContents.on('before-input-event', (event, input) => {
+  const resizeViews = () => {
+    if (!win || win.isDestroyed()) return
+    const b = win.getContentBounds()
+    titleView.setBounds({ x: 0, y: 0, width: b.width, height: TITLEBAR_HEIGHT })
+    pageView.setBounds({ x: 0, y: TITLEBAR_HEIGHT, width: b.width, height: Math.max(0, b.height - TITLEBAR_HEIGHT) })
+  }
+  resizeViews()
+  win.on('resize', resizeViews)
+
+  titleView.webContents.loadFile(path.join(__dirname, 'titlebar.html'), { query: { theme: currentTheme } })
+
+  // Attach page-level behaviour to the DSH page view.
+  const page = pageView.webContents
+  page.on('did-finish-load', () => log('did-finish-load'))
+  page.on('did-fail-load', (_e, code, desc) => { loadFailed = true; log('did-fail-load', code, desc) })
+  page.on('preload-error', (_e, p, err) => log('PRELOAD-ERROR', p, err && err.message))
+
+  page.on('before-input-event', (event, input) => {
     if (!input || input.type !== 'keyDown') return
     const key = String(input.key || '').toLowerCase()
     if (input.key === 'F5' || (input.control && key === 'r')) {
       event.preventDefault()
       log('reload (F5/Ctrl+R)')
-      if (input.shift) win.webContents.reloadIgnoringCache()
-      else win.webContents.reload()
+      if (input.shift) page.reloadIgnoringCache()
+      else page.reload()
     } else if (input.control && key === 'w') {
       event.preventDefault()
       log('hidden (Ctrl+W)')
@@ -84,7 +101,7 @@ function createWindow() {
     }
   })
 
-  win.webContents.on('context-menu', (_e, params) => {
+  page.on('context-menu', (_e, params) => {
     const template = []
     if (params.isEditable) {
       template.push(
@@ -100,13 +117,13 @@ function createWindow() {
     Menu.buildFromTemplate(template).popup({ window: win })
   })
 
-  win.webContents.on('will-navigate', (event, url) => {
+  page.on('will-navigate', (event, url) => {
     if (isDshUrl(url)) return
     event.preventDefault()
     log('external navigation -> default browser:', url)
     shell.openExternal(url)
   })
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  page.setWindowOpenHandler(({ url }) => {
     if (url && !isDshUrl(url)) {
       log('new-window request -> default browser:', url)
       shell.openExternal(url)
@@ -114,7 +131,35 @@ function createWindow() {
     return { action: 'deny' }
   })
 
-  win.loadURL(DSH_URL)
+  // Detect DSH theme changes from the page DOM and sync the custom titlebar.
+  page.executeJavaScript(`
+    (() => {
+      const apply = () => {
+        const dark = !!(document.body && document.body.hasAttribute('data-ds-dark-theme'))
+        console.log('DSH_THEME:' + (dark ? 'dark' : 'light'))
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', apply)
+      } else {
+        apply()
+      }
+      if (document.body) {
+        const mo = new MutationObserver(apply)
+        mo.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme'] })
+      }
+      return true
+    })()
+  `).catch(() => {})
+
+  // Bridge page console -> main -> titlebar.
+  page.on('console-message', (_e, _level, message) => {
+    if (message && message.startsWith('DSH_THEME:')) {
+      const dark = message.endsWith(':dark')
+      applyTitleTheme(dark)
+    }
+  })
+
+  page.loadURL(DSH_URL)
   win.on('close', (e) => {
     if (!app.isQuitting) {
       e.preventDefault()
@@ -122,8 +167,18 @@ function createWindow() {
       win.hide()
     }
   })
-  win.on('closed', () => { win = null })
+  win.on('closed', () => { win = null; titleView = null })
   return win
+}
+
+function applyTitleTheme(dark) {
+  currentTheme = dark ? 'dark' : 'light'
+  log('titlebar theme ->', currentTheme)
+  if (titleView && !titleView.webContents.isDestroyed()) {
+    titleView.webContents.executeJavaScript(
+      `window.setTitleTheme(${dark ? 'true' : 'false'})`
+    ).catch(() => {})
+  }
 }
 
 function showWindow() {
@@ -131,7 +186,7 @@ function showWindow() {
   if (loadFailed) {
     loadFailed = false
     log('reloading after previous failure')
-    w.loadURL(DSH_URL)
+    const views = w.contentView.children || []; if (views[1]) views[1].webContents.loadURL(DSH_URL)
   }
   if (w.isMinimized()) w.restore()
   w.show()
@@ -165,6 +220,18 @@ function startControlServer() {
   server.listen(CTRL_PORT, '127.0.0.1', () => log('control endpoint listening on 127.0.0.1:' + CTRL_PORT))
 }
 
+function setupTitlebarIpc() {
+  const { ipcMain } = require('electron')
+  ipcMain.on('win-min', () => { if (win && !win.isDestroyed()) win.minimize() })
+  ipcMain.on('win-max', () => {
+    if (win && !win.isDestroyed()) {
+      if (win.isMaximized()) win.unmaximize()
+      else win.maximize()
+    }
+  })
+  ipcMain.on('win-close', () => { if (win && !win.isDestroyed()) win.close() })
+}
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -176,6 +243,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     try { require('fs').mkdirSync(path.join(app.getPath('appData'), 'DSHTray'), { recursive: true }) } catch { /* ignore */ }
     log('=== DeepSeek Harness Window v' + app.getVersion(), isSmoke ? '(smoke mode)' : 'starting')
+    setupTitlebarIpc()
     startControlServer()
     createWindow()
     if (isSmoke) {
