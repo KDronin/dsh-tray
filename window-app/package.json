@@ -16,7 +16,8 @@
     "files": [
       "main.js",
       "dsh-preload.js",
-      "package.json"
+      "package.json",
+      "titlebar.html"
     ],
     "win": {
       "target": [
