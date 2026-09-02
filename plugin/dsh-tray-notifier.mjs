@@ -154,7 +154,13 @@ export default {
           const sid = r.id || r.sessionId || (r.session && r.session.id)
           if (!sid || !roots.has(sid)) continue
           if (r.status === 'running') {
-            postNotify({ type: 'task-start', sessionId: sid, ts: Date.now() })
+            let title
+            try {
+              const session = ctx.sessions.get(sid)
+              const snap = session ? ctx.sessionTitle.get(session) : undefined
+              if (snap && typeof snap.title === 'string' && snap.title.trim()) title = snap.title
+            } catch { /* ignore */ }
+            postNotify({ type: 'task-start', sessionId: sid, title, ts: Date.now() })
           }
         }
       } catch (err) {
@@ -170,8 +176,14 @@ export default {
         if (!sid) continue
         if (r.status === 'running') {
           last.set(sid, 'running')
-          postNotify({ type: 'task-start', sessionId: sid, ts: Date.now() })
-          log('resumed running task:', sid)
+          let title
+          try {
+            const session = ctx.sessions.get(sid)
+            const snap = session ? ctx.sessionTitle.get(session) : undefined
+            if (snap && typeof snap.title === 'string' && snap.title.trim()) title = snap.title
+          } catch { /* ignore */ }
+          postNotify({ type: 'task-start', sessionId: sid, title, ts: Date.now() })
+          log('resumed running task:', sid, '|', title || '(no title)')
         } else {
           last.set(sid, r.status || 'idle')
         }
@@ -202,8 +214,14 @@ export default {
 
         if (status === 'running') {
           if (prev !== 'running') {
-            postNotify({ type: 'task-start', sessionId: sid, ts: Date.now() })
-            log('task start:', sid)
+            let title
+            try {
+              const session = ctx.sessions.get(sid)
+              const snap = session ? ctx.sessionTitle.get(session) : undefined
+              if (snap && typeof snap.title === 'string' && snap.title.trim()) title = snap.title
+            } catch { /* ignore */ }
+            postNotify({ type: 'task-start', sessionId: sid, title, ts: Date.now() })
+            log('task start:', sid, '|', title || '(no title)')
           }
           return
         }

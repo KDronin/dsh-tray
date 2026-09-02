@@ -84,7 +84,9 @@ function createWindow() {
   resizeViews()
   win.on('resize', resizeViews)
 
-  titleView.webContents.loadFile(path.join(__dirname, 'titlebar.html'), { query: { theme: currentTheme } })
+  titleView.webContents.loadFile(path.join(__dirname, 'titlebar.html'), {
+    query: { theme: currentTheme, title: currentTaskTitle },
+  })
 
   // Attach page-level behaviour to the DSH page view.
   const page = pageView.webContents
@@ -177,6 +179,18 @@ function createWindow() {
   return win
 }
 
+let currentTaskTitle = ''
+
+function setTaskTitle(title) {
+  currentTaskTitle = (title && typeof title === 'string' ? title : '').trim()
+  log('titlebar task ->', currentTaskTitle || '(none)')
+  if (titleView && !titleView.webContents.isDestroyed()) {
+    titleView.webContents.executeJavaScript(
+      `window.setTaskTitle(${JSON.stringify(currentTaskTitle)})`
+    ).catch(() => {})
+  }
+}
+
 function applyTitleTheme(dark) {
   currentTheme = dark ? 'dark' : 'light'
   log('titlebar theme ->', currentTheme)
@@ -217,6 +231,18 @@ function startControlServer() {
       showWindow()
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end('{"ok":true}')
+      return
+    }
+    if (req.method === 'POST' && req.url === '/title') {
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        let data
+        try { data = JSON.parse(body) } catch { data = null }
+        if (data && typeof data.title === 'string') setTaskTitle(data.title)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end('{"ok":true}')
+      })
       return
     }
     if (req.method === 'POST' && req.url === '/quit') {

@@ -63,6 +63,7 @@ const state = {
   lastNotifyKey: '',
   lastNotifyAt: 0,
   runningSessions: new Set(), // session ids with an active task
+  currentTaskTitle: null,     // title of the currently running/active task
   blockerId: null,            // powerSaveBlocker id while awake is forced
   sleepTimer: null,
   sleepPending: false,
@@ -520,14 +521,38 @@ function startNotifyServer() {
   server.listen(NOTIFY_PORT, '127.0.0.1', () => log('notify endpoint listening on 127.0.0.1:' + NOTIFY_PORT))
 }
 
+function forwardTaskTitle(title) {
+  const body = JSON.stringify({ title: title || '' })
+  try {
+    const req = http.request({
+      host: '127.0.0.1',
+      port: 3490,
+      path: '/title',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+      timeout: 800,
+    }, (res) => { res.resume() })
+    req.on('error', () => { /* ignore */ })
+    req.on('timeout', () => req.destroy())
+    req.end(body)
+  } catch { /* ignore */ }
+}
+
 function handleNotify(payload) {
   const type = payload.type || 'task-complete'
   if (type === 'task-start') {
     const sid = payload.sessionId || 'unknown'
     state.runningSessions.add(sid)
+    if (payload.title && typeof payload.title === 'string' && payload.title.trim()) {
+      state.currentTaskTitle = payload.title.trim()
+    }
     cancelPendingSleep()
     updateKeepAwake()
-    log('task start:', sid)
+    log('task start:', sid, '|', state.currentTaskTitle || '(no title)')
+    forwardTaskTitle(state.currentTaskTitle)
     broadcastStatus()
     refreshTray()
     return
@@ -554,6 +579,10 @@ function handleNotify(payload) {
   if (type === 'task-complete' || type === 'task-done') {
     const sid = payload.sessionId || ''
     if (sid) state.runningSessions.delete(sid)
+    if (state.runningSessions.size === 0) {
+      state.currentTaskTitle = null
+      forwardTaskTitle('')
+    }
     updateKeepAwake()
     maybeScheduleSleep()
     broadcastStatus()
@@ -1052,6 +1081,7 @@ function statusObject() {
     isPackaged: app.isPackaged,
     keepAwake: state.blockerId !== null,
     runningTasks: state.runningSessions.size,
+    currentTaskTitle: state.currentTaskTitle,
     sleepPending: state.sleepPending,
   }
 }

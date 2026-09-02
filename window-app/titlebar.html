@@ -18,9 +18,15 @@
     height: 100%; padding: 0 8px 0 14px;
   }
   .title {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 60%;
     font-size: 13px; font-weight: 500; color: inherit;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none;
   }
+  .bar { position: relative; }
   .controls { display: flex; gap: 2px; -webkit-app-region: no-drag; }
   .ctrl {
     width: 46px; height: 32px; border: none; background: transparent;
@@ -53,6 +59,14 @@
     document.body.classList.toggle('dark', !!dark)
   }
   window.setTitleTheme = setTitleTheme
+
+  function setTaskTitle(title) {
+    document.getElementById('title').textContent = title || ''
+  }
+  window.setTaskTitle = setTaskTitle
+
+  const initialTitle = params.get('title') || ''
+  if (initialTitle) setTaskTitle(initialTitle)
 
   const { ipcRenderer } = require('electron')
   document.getElementById('min').addEventListener('click', () => ipcRenderer.send('win-min'))
