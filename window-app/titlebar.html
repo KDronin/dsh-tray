@@ -14,19 +14,28 @@
     -webkit-app-region: drag;
   }
   .bar {
-    display: flex; align-items: center; justify-content: space-between;
-    height: 100%; padding: 0 8px 0 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 100%;
+    padding: 0 8px 0 14px;
+    position: relative;
   }
-  .title {
+  .app-title {
+    font-size: 13px; font-weight: 600; color: inherit;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: none;
+  }
+  .task-title {
     position: absolute;
     left: 50%;
     transform: translateX(-50%);
-    max-width: 60%;
+    max-width: 50%;
     font-size: 13px; font-weight: 500; color: inherit;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     pointer-events: none;
   }
-  .bar { position: relative; }
+  .spacer { flex: 1; }
   .controls { display: flex; gap: 2px; -webkit-app-region: no-drag; }
   .ctrl {
     width: 46px; height: 32px; border: none; background: transparent;
@@ -41,7 +50,10 @@
 </head>
 <body class="dark">
   <div class="bar">
-    <div class="title" id="title">DeepSeek Harness</div>
+    <div class="app-title" id="app-title">DeepSeek Harness</div>
+    <div class="spacer"></div>
+    <div class="task-title" id="task-title"></div>
+    <div class="spacer"></div>
     <div class="controls">
       <button class="ctrl" id="min" title="最小化">&#x2013;</button>
       <button class="ctrl" id="max" title="最大化">&#x25A1;</button>
@@ -61,7 +73,7 @@
   window.setTitleTheme = setTitleTheme
 
   function setTaskTitle(title) {
-    document.getElementById('title').textContent = title || ''
+    document.getElementById('task-title').textContent = title || ''
   }
   window.setTaskTitle = setTaskTitle
 
