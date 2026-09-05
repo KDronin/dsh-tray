@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>titlebar</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+    background: #151517;
+    color: #e7e9f6;
+    user-select: none;
+    -webkit-app-region: drag;
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 100%;
+    padding: 0 8px 0 14px;
+    position: relative;
+  }
+  .app-title {
+    font-size: 13px; font-weight: 600; color: inherit;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: none;
+  }
+  .task-title {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 50%;
+    font-size: 13px; font-weight: 500; color: inherit;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none;
+  }
+  .spacer { flex: 1; }
+  .controls { display: flex; gap: 2px; -webkit-app-region: no-drag; }
+  .ctrl {
+    width: 46px; height: 32px; border: none; background: transparent;
+    color: inherit; font-size: 12px; cursor: default;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .ctrl:hover { background: rgba(128,128,128,0.2); }
+  .close:hover { background: #e81123; color: #fff; }
+  body.light { background: #FFFFFF; color: #1a1a1a; }
+  body.dark { background: #151517; color: #e7e9f6; }
+</style>
+</head>
+<body class="dark">
+  <div class="bar">
+    <div class="app-title" id="app-title">DeepSeek Harness</div>
+    <div class="spacer"></div>
+    <div class="task-title" id="task-title"></div>
+    <div class="spacer"></div>
+    <div class="controls">
+      <button class="ctrl" id="min" title="最小化">&#x2013;</button>
+      <button class="ctrl" id="max" title="最大化">&#x25A1;</button>
+      <button class="ctrl close" id="close" title="关闭">&#x2715;</button>
+    </div>
+  </div>
+<script>
+  const params = new URLSearchParams(location.search)
+  const initialTheme = params.get('theme') || 'dark'
+  document.body.classList.toggle('light', initialTheme === 'light')
+  document.body.classList.toggle('dark', initialTheme !== 'light')
+
+  function setTitleTheme(dark) {
+    document.body.classList.toggle('light', !dark)
+    document.body.classList.toggle('dark', !!dark)
+  }
+  window.setTitleTheme = setTitleTheme
+
+  function setTaskTitle(title) {
+    document.getElementById('task-title').textContent = title || ''
+  }
+  window.setTaskTitle = setTaskTitle
+
+  const initialTitle = params.get('title') || ''
+  if (initialTitle) setTaskTitle(initialTitle)
+
+  const { ipcRenderer } = require('electron')
+  document.getElementById('min').addEventListener('click', () => ipcRenderer.send('win-min'))
+  document.getElementById('max').addEventListener('click', () => ipcRenderer.send('win-max'))
+  document.getElementById('close').addEventListener('click', () => ipcRenderer.send('win-close'))
+</script>
+</body>
+</html>

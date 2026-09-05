@@ -10,7 +10,7 @@
     "electronVersion": "33.4.11",
     "electronDist": "../node_modules/electron/dist",
     "directories": {
-      "output": "out",
+      "output": "dist",
       "buildResources": "."
     },
     "files": [
@@ -21,12 +21,9 @@
     ],
     "win": {
       "target": [
-        "portable"
+        "dir"
       ],
       "icon": "deepseek-256.ico"
-    },
-    "portable": {
-      "artifactName": "DeepSeek-Harness-Window-${version}.exe"
     }
   }
 }

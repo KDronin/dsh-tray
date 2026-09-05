@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "icons": "node scripts/gen-icons.mjs",
-    "dist": "electron-builder --win portable"
+    "dist": "electron-builder --win dir"
   },
   "devDependencies": {
     "electron": "^33.2.1",
@@ -19,24 +19,26 @@
     "productName": "DeepSeek Harness Tray",
     "electronDist": "node_modules/electron/dist",
     "directories": {
-      "output": "out",
+      "output": "dist",
       "buildResources": "assets"
     },
     "files": [
       "main.js",
+      "tray-main.js",
+      "window-main.js",
       "preload.js",
+      "dsh-preload.js",
       "ui/**",
       "assets/**",
+      "titlebar.html",
+      "window.ico",
       "package.json"
     ],
     "win": {
       "target": [
-        "portable"
+        "dir"
       ],
       "icon": "assets/icon.ico"
-    },
-    "portable": {
-      "artifactName": "DeepSeek-Harness-Tray-${version}.exe"
     }
   }
 }
