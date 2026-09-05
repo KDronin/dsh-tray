@@ -10,7 +10,8 @@ const path = require('path')
 const { app } = require('electron')
 
 const exeName = path.basename(process.execPath || '')
-const isWindow = /deepseek harness window/i.test(exeName)
+const envMode = process.env.DSH_APP_MODE || ''
+const isWindow = envMode === 'window' || /deepseek harness window/i.test(exeName)
 
 // Keep single-instance locks and per-app storage separate.
 app.setPath('userData', path.join(app.getPath('appData'), isWindow ? 'DeepSeek Harness Window' : 'DeepSeek Harness Tray'))
