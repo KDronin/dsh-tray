@@ -154,13 +154,7 @@ export default {
           const sid = r.id || r.sessionId || (r.session && r.session.id)
           if (!sid || !roots.has(sid)) continue
           if (r.status === 'running') {
-            let title
-            try {
-              const session = ctx.sessions.get(sid)
-              const snap = session ? ctx.sessionTitle.get(session) : undefined
-              if (snap && typeof snap.title === 'string' && snap.title.trim()) title = snap.title
-            } catch { /* ignore */ }
-            postNotify({ type: 'task-start', sessionId: sid, title, ts: Date.now() })
+            postNotify({ type: 'task-start', sessionId: sid, ts: Date.now() })
           }
         }
       } catch (err) {
@@ -176,14 +170,8 @@ export default {
         if (!sid) continue
         if (r.status === 'running') {
           last.set(sid, 'running')
-          let title
-          try {
-            const session = ctx.sessions.get(sid)
-            const snap = session ? ctx.sessionTitle.get(session) : undefined
-            if (snap && typeof snap.title === 'string' && snap.title.trim()) title = snap.title
-          } catch { /* ignore */ }
-          postNotify({ type: 'task-start', sessionId: sid, title, ts: Date.now() })
-          log('resumed running task:', sid, '|', title || '(no title)')
+          postNotify({ type: 'task-start', sessionId: sid, ts: Date.now() })
+          log('resumed running task:', sid)
         } else {
           last.set(sid, r.status || 'idle')
         }
@@ -214,14 +202,8 @@ export default {
 
         if (status === 'running') {
           if (prev !== 'running') {
-            let title
-            try {
-              const session = ctx.sessions.get(sid)
-              const snap = session ? ctx.sessionTitle.get(session) : undefined
-              if (snap && typeof snap.title === 'string' && snap.title.trim()) title = snap.title
-            } catch { /* ignore */ }
-            postNotify({ type: 'task-start', sessionId: sid, title, ts: Date.now() })
-            log('task start:', sid, '|', title || '(no title)')
+            postNotify({ type: 'task-start', sessionId: sid, ts: Date.now() })
+            log('task start:', sid)
           }
           return
         }
@@ -295,12 +277,56 @@ export default {
     })
 
     // ---- User questions ----
-    // The harness allows exactly ONE active user-questions provider; the
-    // web app's api-gateway owns it. Registering our own used to race the
-    // gateway and fail the whole plugin tree with DUPLICATE_PROVIDER, so we
-    // never register: we wait for the existing provider and wrap it instead.
-    // The tray answers first; the original provider is the fallback when the
-    // tray is unreachable.
+    // 0.1.2 replaced the single-provider model with a scoped waterfall:
+    // `ctx.userQuestions.ask()` dispatches a `user-questions/request` event
+    // (carrier = the asking agent's scope) and the first listener that
+    // answers WITHOUT calling next() owns the interaction; calling next()
+    // defers to the web UI answerer. We answer from the tray when it is
+    // reachable and defer otherwise — no registration conflict is possible.
+    ctx.on('user-questions/request', (request, next) => {
+      try {
+        if (!request || !Array.isArray(request.questions)) return next()
+        const id = `question:${sessionIdOfAgent(request.agent) || 'agent'}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+        return new Promise((resolve, reject) => {
+          const pending = { resolve, reject }
+          pendingQuestions.set(id, pending)
+          const onAbort = () => {
+            if (pendingQuestions.delete(id)) reject(new Error('question aborted'))
+          }
+          if (request.signal) {
+            if (request.signal.aborted) {
+              pendingQuestions.delete(id)
+              reject(new Error('question aborted'))
+              return
+            }
+            request.signal.addEventListener('abort', onAbort, { once: true })
+          }
+          postNotify({
+            type: 'question',
+            id,
+            questions: request.questions,
+            sessionId: sessionIdOfAgent(request.agent),
+            answerPort: ANSWER_PORT,
+            ts: Date.now(),
+          }, (ok) => {
+            if (!ok) {
+              // Tray unreachable: hand the interaction to the web UI answerer.
+              if (pendingQuestions.delete(id)) {
+                Promise.resolve(next()).then(resolve, reject)
+              }
+            }
+          })
+        })
+      } catch (err) {
+        log('user-questions/request error:', err && err.message)
+        return next()
+      }
+    })
+    log('dsh-tray-notifier user-questions answerer ready')
+
+    // ---- Legacy (<= 0.1.1) user-questions provider wrap ----
+    // Older harnesses had ONE provider slot owned by api-gateway; register
+    // nothing, just wrap whatever provider exists so the tray answers first.
     let originalQuestionProvider = undefined
     let wrappedUserQuestions = null
     let restoreQuestionProvider = null
@@ -358,16 +384,17 @@ export default {
           wrappedUserQuestions = null
           restoreQuestionProvider = null
         }
-        log('dsh-tray-notifier wrapped user-questions provider')
+        log('dsh-tray-notifier wrapped user-questions provider (legacy <=0.1.1)')
         return true
       } catch (err) {
         log('user-questions wrap error:', err && err.message)
         return false
       }
     }
-    if (!tryWrapQuestionProvider()) {
-      // The gateway registers its provider during boot; probe briefly for it
-      // to land (500ms x 60 = 30s), then give up quietly.
+    const uq = ctx.get('userQuestions')
+    if (uq && typeof uq.registerProvider === 'function' && !tryWrapQuestionProvider()) {
+      // Legacy <=0.1.1: the gateway registers its provider during boot; probe
+      // briefly for it to land (500ms x 60 = 30s), then give up quietly.
       let wrapTries = 0
       const wrapProbe = ctx.timer.interval(() => {
         wrapTries += 1

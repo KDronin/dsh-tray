@@ -64,6 +64,9 @@ const state = {
   lastNotifyAt: 0,
   runningSessions: new Set(), // session ids with an active task
   currentTaskTitle: null,     // title of the currently running/active task
+  dshUrl: DSH_URL,           // authenticated URL printed by dsh web (contains launch token)
+  dshUpdatePending: null,    // latest version discovered while running
+  restarting: false,         // restart sequence in progress
   blockerId: null,            // powerSaveBlocker id while awake is forced
   sleepTimer: null,
   sleepPending: false,
@@ -245,7 +248,8 @@ function localDshVersion() {
 
 // Latest published version via pnpm (fast query; offline -> "no update").
 function latestDshVersion(cb) {
-  execFile('cmd.exe', ['/d', '/c', 'pnpm view @deepseek-ai/dsh version'], {
+  const cmd = 'pnpm view @deepseek-ai/dsh version || npm view @deepseek-ai/dsh version'
+  execFile('cmd.exe', ['/d', '/c', cmd], {
     windowsHide: true,
     timeout: 30000,
     maxBuffer: 1024 * 1024,
@@ -268,7 +272,12 @@ function updateDshVisible(version, done) {
     fs.writeFileSync(bat,
       `@echo off\r\n` +
       `title DeepSeek Harness - updating dsh to ${version}\r\n` +
-      `pnpm --dir "${DSH_CLI_DIR}" add @deepseek-ai/dsh@${version}\r\n` +
+      `where pnpm >nul 2>nul\r\n` +
+      `if errorlevel 1 (\r\n` +
+      `  npm install --prefix "${DSH_CLI_DIR}" @deepseek-ai/dsh@${version}\r\n` +
+      `) else (\r\n` +
+      `  pnpm --dir "${DSH_CLI_DIR}" add @deepseek-ai/dsh@${version}\r\n` +
+      `)\r\n` +
       `echo.\r\n` +
       `echo Update finished. This window closes automatically.\r\n` +
       `timeout /t 5 /nobreak > nul\r\n`)
@@ -278,48 +287,97 @@ function updateDshVisible(version, done) {
     return
   }
   let child
+  const fail = (why) => {
+    log('dsh update failed:', why)
+    done(false)
+  }
   try {
     child = spawn('cmd.exe', ['/d', '/c', bat], {
       cwd: os.homedir(),
-      windowsHide: false, // visible on purpose: the user asked to see updates
+      windowsHide: false,
       stdio: 'inherit',
     })
   } catch (err) {
-    log('updateDshVisible spawn error', err.message)
-    done(false)
+    fail(err.message)
     return
   }
+  let finished = false
+  const finish = (ok) => {
+    if (finished) return
+    finished = true
+    clearTimeout(hardTimer)
+    done(ok)
+  }
+  const hardTimer = setTimeout(() => {
+    try { child.kill() } catch { /* ignore */ }
+    fail('timed out after 15 minutes')
+  }, 15 * 60 * 1000)
   child.on('exit', (code) => {
-    log('dsh update child exited, code', code)
-    done(code === 0)
+    const local = localDshVersion()
+    const ok = code === 0 && local === version && fs.existsSync(DSH_BIN)
+    log('dsh update child exited, code', code, 'installed', local || '(none)', 'target', version)
+    finish(ok)
   })
-  child.on('error', (err) => {
-    log('dsh update child error', err.message)
-    done(false)
-  })
+  child.on('error', (err) => fail(err.message))
 }
 
 function spawnDsh() {
-  // Direct spawn of node with an argument array: Node quotes each argument
-  // itself, so the (space-containing) bin path is passed correctly. Going
-  // through `cmd /c "node \"...\""` corrupted the quotes (Node's escaping
-  // clashes with cmd's quoting rules) and every start failed with
-  // MODULE_NOT_FOUND. The child's output is captured to a log file so a
-  // future failure is visible instead of silent.
+  if (!fs.existsSync(DSH_BIN)) {
+    log('DSH bin missing:', DSH_BIN)
+    state.dshStarting = false
+    state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
+    broadcastStatus()
+    refreshTray()
+    return
+  }
   const childLogPath = path.join(dataDir, 'dsh-child.log')
   let childLog
   try {
-    fs.appendFileSync(childLogPath, `\n--- ${new Date().toISOString()} start ---\n`)
+    fs.appendFileSync(childLogPath, `
+--- ${new Date().toISOString()} start ---
+`)
     childLog = fs.openSync(childLogPath, 'a')
   } catch { childLog = -1 }
-  const child = spawn('node', [DSH_BIN, 'web', '--no-open'], {
-    cwd: os.homedir(),
-    windowsHide: true,
-    stdio: ['ignore', childLog >= 0 ? childLog : 'ignore', childLog >= 0 ? childLog : 'ignore'],
-  })
+  let child
+  try {
+    child = spawn('node', [DSH_BIN, 'web', '--no-open'], {
+      cwd: os.homedir(),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, NO_COLOR: '1' },
+    })
+  } catch (err) {
+    log('DSH spawn error:', err.message)
+    if (childLog >= 0) { try { fs.closeSync(childLog) } catch { /* ignore */ } }
+    state.dshStarting = false
+    state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
+    broadcastStatus()
+    refreshTray()
+    return
+  }
   state.dshManaged = true
   state.dshAdopted = false
   state.dshPid = child.pid
+
+  let stdoutRest = ''
+  let stderrRest = ''
+  const consume = (chunk, stderr) => {
+    const s = String(chunk || '')
+    if (childLog >= 0) { try { fs.writeSync(childLog, s) } catch { /* ignore */ } }
+    let rest = (stderr ? stderrRest : stdoutRest) + s
+    const lines = rest.split(/\n/)
+    rest = lines.pop() || ''
+    if (stderr) stderrRest = rest
+    else stdoutRest = rest
+    for (let line of lines) {
+      line = line.replace(/\r$/, '')
+      const m = line.match(/dsh web:\s*(\S+)/i)
+      if (m) updateDshUrl(m[1])
+    }
+  }
+  child.stdout.on('data', (c) => consume(c, false))
+  child.stderr.on('data', (c) => consume(c, true))
+
   child.on('exit', (code) => {
     try { if (childLog >= 0) fs.closeSync(childLog) } catch { /* ignore */ }
     log('DSH child exited, code', code)
@@ -335,70 +393,177 @@ function spawnDsh() {
   })
   child.on('error', (err) => {
     log('DSH child error', err.message)
+    if (childLog >= 0) { try { fs.closeSync(childLog) } catch { /* ignore */ } }
     state.dshStarting = false
     state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
+    broadcastStatus()
+    refreshTray()
+  })
+}
+
+function updateDshUrl(url) {
+  if (!url || typeof url !== 'string') return
+  if (url === state.dshUrl) return
+  state.dshUrl = url
+  log('DSH authenticated URL:', url)
+  broadcastStatus()
+  refreshTray()
+  sendWindowUrl(url)
+}
+
+function checkUpdateInBackground(local) {
+  latestDshVersion((latest) => {
+    if (!latest || latest === local) return
+    log('dsh update available:', local, '->', latest)
+    state.dshUpdatePending = latest
+    broadcastStatus()
+    refreshTray()
   })
 }
 
 function startDsh() {
-  if (state.dshStarting || state.dshRunning) return
+  if (state.dshStarting || state.dshRunning || state.restarting) return
   if (state.dshCooldownUntil && Date.now() < state.dshCooldownUntil) return
   state.dshStarting = true
   state.openedBrowserFor = false
-  log('starting DSH (installed:', localDshVersion() || 'none', ')')
-  // The update watch is deliberately fire-and-forget within the start: no
-  // update check hits the registry synchronously; a slow/offline registry
-  // just falls back to the installed version.
+  broadcastStatus()
+  refreshTray()
+
+  const local = localDshVersion()
+  if (local && fs.existsSync(DSH_BIN)) {
+    // Start the installed copy immediately; never block start on the registry.
+    log('starting installed DSH:', local)
+    spawnDsh()
+    checkUpdateInBackground(local)
+    setTimeout(() => {
+      if (state.dshStarting && !state.dshRunning) {
+        log('DSH start timed out after 120s')
+        state.dshStarting = false
+        state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
+        broadcastStatus()
+        refreshTray()
+      }
+    }, 120000)
+    return
+  }
+
+  // Nothing installed: resolve the latest version and install it visibly.
+  log('DSH not installed; resolving latest version')
   latestDshVersion((latest) => {
-    if (!state.dshStarting) return // stop/quit raced us
-    const local = localDshVersion()
-    if (latest && latest !== local) {
-      log('dsh update available:', local || '(none)', '->', latest)
-      updateDshVisible(latest, (ok) => {
-        if (!ok) {
-          log('dsh update failed; falling back to installed version')
-        }
-        if (state.dshStarting) spawnDsh()
-        else state.dshStarting = false
-      })
-      return
-    }
-    if (!latest) log('dsh version check unavailable; using installed version')
-    if (!local && !latest) {
-      // Nothing installed and the registry is unreachable — nothing to run.
-      log('dsh is not installed and the registry is unreachable')
+    if (!state.dshStarting) return
+    if (!latest) {
+      log('dsh is not installed and the version check is unavailable')
       state.dshStarting = false
       state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
       broadcastStatus()
       refreshTray()
       return
     }
-    spawnDsh()
+    updateDshVisible(latest, (ok) => {
+      if (!ok || !fs.existsSync(DSH_BIN)) {
+        log('dsh install failed; not starting')
+        state.dshStarting = false
+        state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
+        broadcastStatus()
+        refreshTray()
+        return
+      }
+      state.dshUpdatePending = null
+      if (state.dshStarting) {
+        spawnDsh()
+        setTimeout(() => {
+          if (state.dshStarting && !state.dshRunning) {
+            log('DSH start timed out after 120s')
+            state.dshStarting = false
+            state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS
+            broadcastStatus()
+            refreshTray()
+          }
+        }, 120000)
+      } else {
+        state.dshStarting = false
+      }
+    })
   })
-  setTimeout(() => { if (state.dshStarting) { state.dshStarting = false; state.dshCooldownUntil = Date.now() + DSH_RETRY_COOLDOWN_MS; log('DSH start timed out after ' + DSH_START_TIMEOUT_MS / 1000 + 's (likely a version update in progress)') } }, DSH_START_TIMEOUT_MS)
-  broadcastStatus()
-  refreshTray()
 }
 
-function stopDsh() {
-  if (!state.dshManaged || !state.dshPid) return false
-  log('stopping DSH tree, pid', state.dshPid)
-  try {
-    spawn('taskkill', ['/pid', String(state.dshPid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
-  } catch (err) {
-    log('taskkill error', err.message)
+function waitForPortFree(port, cb, timeoutMs = 15000) {
+  const started = Date.now()
+  let done = false
+  const finish = (free) => {
+    if (done) return
+    done = true
+    cb(free)
   }
+  const attempt = () => {
+    const socket = require('net').connect({ host: '127.0.0.1', port }, () => {
+      socket.destroy()
+      if (Date.now() - started >= timeoutMs) return finish(false)
+      setTimeout(attempt, 250)
+    })
+    socket.on('error', () => { socket.destroy(); finish(true) })
+    socket.setTimeout(1000, () => { socket.destroy(); if (Date.now() - started >= timeoutMs) finish(false); else setTimeout(attempt, 250) })
+  }
+  attempt()
+}
+
+function stopDsh(cb) {
+  const done = typeof cb === 'function' ? cb : () => {}
+  if (!state.dshManaged || !state.dshPid) {
+    state.dshManaged = false
+    state.dshPid = null
+    state.dshRunning = false
+    done()
+    return false
+  }
+  const pid = state.dshPid
+  log('stopping DSH tree, pid', pid)
   state.dshManaged = false
   state.dshPid = null
+  state.dshRunning = false
+  state.dshStarting = false
+  try {
+    const child = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+    child.on('exit', () => done())
+    child.on('error', () => done())
+  } catch (err) {
+    log('taskkill error', err.message)
+    done()
+  }
+  broadcastStatus()
+  refreshTray()
   return true
 }
 
 function restartDsh() {
+  if (state.restarting) return
+  state.restarting = true
+  state.dshStarting = false
+  state.dshCooldownUntil = 0
+  broadcastStatus()
+  refreshTray()
   log('restarting DSH on user request')
-  stopDsh()
-  setTimeout(() => {
-    if (!state.dshRunning) startDsh()
-  }, 800)
+
+  const finish = () => {
+    if (state.dshUpdatePending) {
+      const version = state.dshUpdatePending
+      log('applying pending DSH update before restart:', version)
+      updateDshVisible(version, (ok) => {
+        if (ok) state.dshUpdatePending = null
+        state.restarting = false
+        startDsh()
+      })
+      return
+    }
+    state.restarting = false
+    startDsh()
+  }
+
+  if (state.dshManaged && state.dshPid) {
+    stopDsh(() => waitForPortFree(3080, finish))
+  } else {
+    waitForPortFree(3080, finish)
+  }
 }
 
 // Find the PID of the process listening on the DSH web port (netstat parse).
@@ -425,6 +590,20 @@ function findDshPid(cb) {
   })
 }
 
+// Read the most recent authenticated URL printed by dsh web from the child
+// log. When the tray restarts while a DSH it previously spawned is still
+// running, this recovers the still-valid launch token for the adopted process.
+function lastDshUrlFromLog() {
+  try {
+    const lines = fs.readFileSync(path.join(dataDir, 'dsh-child.log'), 'utf8').split(/\n/)
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const m = lines[i].match(/dsh web:\s*(\S+)/i)
+      if (m) return m[1].trim()
+    }
+  } catch { /* ignore */ }
+  return ''
+}
+
 // Take over an already-running (externally started) DSH process: track its
 // PID so stop/restart work and it follows the tray app's lifecycle.
 function adoptRunningDsh() {
@@ -437,6 +616,13 @@ function adoptRunningDsh() {
     state.dshManaged = true
     state.dshAdopted = true
     state.dshPid = pid
+    if (!state.dshUrl || state.dshUrl === DSH_URL) {
+      const recovered = lastDshUrlFromLog()
+      if (recovered) {
+        state.dshUrl = recovered
+        log('adopted DSH URL from child log:', recovered)
+      }
+    }
     log('adopted running DSH process, pid', pid)
     broadcastStatus()
     refreshTray()
@@ -482,7 +668,7 @@ function markDown() {
 function afterStatusChange() {
   broadcastStatus()
   refreshTray()
-  if (!state.dshRunning && settings && settings.autoLaunchDsh && !state.dshStarting) startDsh()
+  if (!state.dshRunning && settings && settings.autoLaunchDsh && !state.dshStarting && !state.restarting) startDsh()
 }
 
 // ---------- notify HTTP endpoint (for the DSH plugin) ----------
@@ -757,8 +943,34 @@ function windowAppShow() {
   http.get(WINDOW_CTRL + '/show', (res) => { res.resume() }).on('error', () => { /* ignore */ })
 }
 
+function sendWindowUrl(url) {
+  if (!url || typeof url !== 'string') return
+  const body = JSON.stringify({ url })
+  try {
+    const req = http.request({
+      host: '127.0.0.1',
+      port: 3490,
+      path: '/url',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+      timeout: 1000,
+    }, (res) => { res.resume() })
+    req.on('error', () => { /* ignore */ })
+    req.on('timeout', () => req.destroy())
+    req.end(body)
+  } catch { /* ignore */ }
+}
+
 function openDsh() {
   log('opening DSH window application')
+  if (!state.dshUrl || state.dshUrl === DSH_URL) {
+    const recovered = lastDshUrlFromLog()
+    if (recovered) updateDshUrl(recovered)
+  }
+  if (state.dshUrl) sendWindowUrl(state.dshUrl)
   windowAppPing((alive) => {
     if (alive) {
       log('window app already running; showing it')
@@ -772,7 +984,12 @@ function openDsh() {
     }
     log('window app not running; spawning', exe)
     try {
-      const child = spawn(exe, [], { windowsHide: false, detached: true, stdio: 'ignore' })
+      const child = spawn(exe, [], {
+        windowsHide: false,
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, DSH_WEB_URL: state.dshUrl || DSH_URL },
+      })
       child.on('error', (err) => log('window app spawn error', err.message))
       child.unref()
       // the app takes a moment to boot its control plane; retry /show
@@ -1084,6 +1301,7 @@ function statusObject() {
     keepAwake: state.blockerId !== null,
     runningTasks: state.runningSessions.size,
     currentTaskTitle: state.currentTaskTitle,
+    dshUpdatePending: state.dshUpdatePending,
     sleepPending: state.sleepPending,
   }
 }

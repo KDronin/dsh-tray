@@ -16,7 +16,7 @@ const { app, BrowserWindow, Menu, shell, WebContentsView } = require('electron')
 const http = require('http')
 const path = require('path')
 
-const DSH_URL = 'http://127.0.0.1:3080'
+let dshUrl = process.env.DSH_WEB_URL || 'http://127.0.0.1:3080'
 const CTRL_PORT = 3490
 const TITLEBAR_HEIGHT = 40
 
@@ -34,14 +34,31 @@ function log(...args) {
   } catch { /* ignore */ }
 }
 
+function dshOrigin() {
+  try { return new URL(dshUrl).origin } catch { return 'http://127.0.0.1:3080' }
+}
+
 function isDshUrl(url) {
   if (!url) return false
-  return url === 'about:blank' || url.startsWith(DSH_URL)
+  if (url === 'about:blank') return true
+  try { return new URL(url).origin === dshOrigin() } catch { return false }
+}
+
+function setDshUrl(next) {
+  if (!next || typeof next !== 'string') return
+  const trimmed = next.trim()
+  if (!trimmed || trimmed === dshUrl) return
+  dshUrl = trimmed
+  log('DSH URL ->', dshUrl)
+  try {
+    const views = win && !win.isDestroyed() ? (win.contentView.children || []) : []
+    if (views[1] && views[1].webContents) views[1].webContents.loadURL(dshUrl)
+  } catch { /* ignore */ }
 }
 
 function createWindow() {
   if (win && !win.isDestroyed()) return win
-  log('creating window at', DSH_URL)
+  log('creating window at', dshUrl)
   win = new BrowserWindow({
     width: 1340,
     height: 880 + TITLEBAR_HEIGHT,
@@ -167,7 +184,7 @@ function createWindow() {
     }
   })
 
-  page.loadURL(DSH_URL)
+  page.loadURL(dshUrl)
   win.on('close', (e) => {
     if (!app.isQuitting) {
       e.preventDefault()
@@ -213,7 +230,7 @@ function showWindow() {
   if (loadFailed) {
     loadFailed = false
     log('reloading after previous failure')
-    const views = w.contentView.children || []; if (views[1]) views[1].webContents.loadURL(DSH_URL)
+    const views = w.contentView.children || []; if (views[1]) views[1].webContents.loadURL(dshUrl)
   }
   if (w.isMinimized()) w.restore()
   w.show()
@@ -231,6 +248,18 @@ function startControlServer() {
       showWindow()
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end('{"ok":true}')
+      return
+    }
+    if (req.method === 'POST' && req.url === '/url') {
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        let data
+        try { data = JSON.parse(body) } catch { data = null }
+        if (data && typeof data.url === 'string') setDshUrl(data.url)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end('{"ok":true}')
+      })
       return
     }
     if (req.method === 'POST' && req.url === '/title') {

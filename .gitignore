@@ -7,3 +7,5 @@ test/.testdata/
 build-log*.txt
 debug-out.txt
 builder-mirror/
+dist*/
+build-launchers/

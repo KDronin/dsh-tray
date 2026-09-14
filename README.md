@@ -4,7 +4,7 @@
 
 ## 功能
 
-- **一键启动**：双击桌面 exe 即启动 Harness（自动执行 `npx @deepseek-ai/dsh web`），无需命令行；托盘图标带运行状态点
+- **一键启动**：双击托盘入口 exe 即启动 Harness（应用自有目录安装/更新 `@deepseek-ai/dsh`，无需命令行）；托盘图标带运行状态点
 - **任务完成通知**：通过配套的 DSH 插件（`plugin/dsh-tray-notifier.mjs`）监听 `agent/status`，任务完成时在屏幕右下角弹出自定义样式通知
 - **权限/提问弹窗**：任务遇到权限申请或需要用户回答问题时，也会弹出系统托盘提示窗，提供“允许一次/拒绝/取消”或问题选项按钮
 - **电源管理**：
@@ -21,11 +21,16 @@
 ### 桌面应用（Windows）
 
 ```powershell
-# 1. 构建（需要 Node.js 18+）
+# 1. 构建（需要 Node.js 18+ 与 MinGW gcc）
 npm install
 npm run icons
-npx electron-builder --win portable
-# 产物：out/DeepSeek-Harness-Tray-<version>.exe，复制到桌面双击运行
+npm run dist
+# 产物：dist-release/win-unpacked/
+#   DeepSeek Harness Tray.exe    (87 KB 入口启动器)
+#   DeepSeek Harness Window.exe  (87 KB 入口启动器)
+#   DeepSeek Harness Runtime.exe (共享 Electron 运行时)
+#   resources/app.asar + 运行资源文件
+# 复制整个 win-unpacked 文件夹到任意位置，双击对应入口 exe 即可运行。
 ```
 
 ### DSH 通知插件（DeepSeek Harness 侧）
@@ -48,7 +53,11 @@ npm test         # 无头回归测试（node test/run.js）
 npm run icons    # 重新生成图标
 ```
 
-- `main.js` — 主进程（托盘/窗口/电源/进程接管/GitHub）
+- `main.js` — 入口分发器（根据 exe 名或 `DSH_APP_MODE` 选择托盘/窗口入口）
+- `tray-main.js` — 托盘主进程（启动/更新/接管 DSH、电源管理、通知、GitHub）
+- `window-main.js` — DSH 独立窗口主进程（自绘标题栏、主题同步、内嵌浏览器行为）
+- `window-app/` — 早期独立窗口应用的源码（当前已合并到上方入口）
+- `scripts/launcher.c` — 两个轻量入口 exe 的 C 启动器源码
 - `dsh-preload.js` — Harness 窗口内的浏览器化输入辅助（引号自动配对等）
 - `ui/` — 设置窗口与通知弹窗
 - `test/` — mock Electron 无头测试
