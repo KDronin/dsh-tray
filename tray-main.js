@@ -545,18 +545,21 @@ function restartDsh() {
   log('restarting DSH on user request')
 
   const finish = () => {
-    if (state.dshUpdatePending) {
-      const version = state.dshUpdatePending
-      log('applying pending DSH update before restart:', version)
-      updateDshVisible(version, (ok) => {
-        if (ok) state.dshUpdatePending = null
-        state.restarting = false
-        startDsh()
-      })
-      return
-    }
     state.restarting = false
     startDsh()
+    // Apply any discovered update in the background so restart itself is
+    // immediate; the next start picks up the new version.
+    if (state.dshUpdatePending) {
+      const version = state.dshUpdatePending
+      setTimeout(() => {
+        log('applying pending DSH update in background:', version)
+        updateDshVisible(version, (ok) => {
+          if (ok) state.dshUpdatePending = null
+          broadcastStatus()
+          refreshTray()
+        })
+      }, 3000)
+    }
   }
 
   if (state.dshManaged && state.dshPid) {
